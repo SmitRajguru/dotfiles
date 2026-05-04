@@ -1,0 +1,82 @@
+{
+  "version": 3,
+  "lines": [
+    [
+      {
+        "id": "1",
+        "type": "model",
+        "color": "cyan"
+      },
+      {
+        "id": "2",
+        "type": "separator"
+      },
+      {
+        "id": "11",
+        "type": "current-working-dir",
+        "color": "blue",
+        "rawValue": true,
+        "metadata": {
+          "abbreviateHome": "true"
+        }
+      },
+      {
+        "id": "4",
+        "type": "custom-command",
+        "commandPath": "/home/srajguru/.claude/scripts/git-chevron.py",
+        "preserveColors": true,
+        "timeout": 1500
+      },
+      {
+        "id": "5",
+        "type": "git-branch",
+        "color": "magenta",
+        "metadata": {
+          "hideNoGit": "true"
+        }
+      },
+      {
+        "id": "6",
+        "type": "separator"
+      },
+      {
+        "id": "7",
+        "type": "git-changes",
+        "color": "yellow",
+        "metadata": {
+          "hideNoGit": "true"
+        }
+      },
+      {
+        "id": "10",
+        "type": "flex-separator"
+      },
+      {
+        "id": "3",
+        "type": "custom-command",
+        "commandPath": "/home/srajguru/.claude/scripts/ctx-status.py",
+        "preserveColors": true,
+        "timeout": 1500
+      }
+    ],
+    [],
+    []
+  ],
+  "flexMode": "full",
+  "compactThreshold": 60,
+  "colorLevel": 2,
+  "inheritSeparatorColors": false,
+  "globalBold": false,
+  "powerline": {
+    "enabled": false,
+    "separators": [
+      ""
+    ],
+    "separatorInvertBackground": [
+      false
+    ],
+    "startCaps": [],
+    "endCaps": [],
+    "autoAlign": false
+  }
+}

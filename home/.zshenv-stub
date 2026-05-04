@@ -1,0 +1,6 @@
+# Thin stub: sets ZDOTDIR, then forwards to the real .zshenv under XDG.
+# Lives at $HOME/.zshenv (where zsh always reads first); real config lives at
+# $XDG_CONFIG_HOME/zsh/.zshenv.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+export ZDOTDIR="$XDG_CONFIG_HOME/zsh"
+[ -r "$ZDOTDIR/.zshenv" ] && . "$ZDOTDIR/.zshenv"

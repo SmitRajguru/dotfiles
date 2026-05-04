@@ -1,0 +1,22 @@
+# Allowlist style: ignore everything by default
+*
+
+# Track these
+!.gitignore
+!.gitmodules
+!README.md
+!bootstrap.sh
+!setup.sh
+!sync.sh
+
+# AI tooling
+!ai/
+!ai/**
+
+# Shell/term XDG configs
+!config/
+!config/**
+
+# Non-XDG home stragglers
+!home/
+!home/**

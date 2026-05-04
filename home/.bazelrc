@@ -1,0 +1,30 @@
+# Keep the bazel server alive for 1 hour.
+startup --max_idle_secs=3600
+ 
+# Include timestamps for all status messages.
+common --show_timestamps
+
+# # remote only build common
+# common --config=remote-only
+
+# CUDA compile arch
+# common --//base/cuda:cuda_arch=compute_75
+ 
+# Purge external resources when cleaning.
+# Clean asynchronously with a daemon process.
+clean --expunge_async
+ 
+# Show stdout and stderr output from failing test targets.
+# Only summarize the names of unsuccessful test targets.
+# NOTE: You may want to change --test_summary=short if you prefer to see more information.
+test --test_output=errors --test_summary=terse
+
+# A config that filters out manual targets during build and test operations
+build:nomanual --build_tag_filters=-manual
+test:nomanual --test_tag_filters=-manual
+
+# Use kraken to parallelize the build
+# build --config=cuda --jobs=500 --config=kraken
+# --local_execution_slots=6
+build --config=cuda --config=remote-only
+# build --config=cuda

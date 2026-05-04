@@ -1,0 +1,55 @@
+{
+  "cleanupPeriodDays": 36500,
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_PLAN_MODE_REQUIRED": "false",
+    "CTX_WARN_THRESHOLD": "25"
+  },
+  "model": "opus[1m]",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if git -C ~/dotfiles status --porcelain | grep -q .; then printf '%s\\n' '{\"systemMessage\":\"~/dotfiles has uncommitted changes \\u2014 consider committing and pushing\"}'; fi"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -C ~/dotfiles fetch origin 2>/dev/null && if [ \"$(git -C ~/dotfiles rev-list HEAD..origin/master --count 2>/dev/null)\" -gt 0 ]; then echo \"~/dotfiles is behind origin/master - consider pulling\" >&2; exit 1; fi"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bunx -y ccstatusline@latest",
+    "padding": 0
+  },
+  "enabledPlugins": {
+    "document-skills@anthropic-agent-skills": false,
+    "example-skills@anthropic-agent-skills": true,
+    "agent-sdk-dev@claude-code-plugins": false,
+    "code-review@claude-code-plugins": false,
+    "pr-review-toolkit@claude-code-plugins": false,
+    "ast-grep@ast-grep-marketplace": true,
+    "clangd-lsp@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "slack@claude-plugins-official": true,
+    "atlassian@claude-plugins-official": true
+  },
+  "alwaysThinkingEnabled": true,
+  "skipDangerousModePermissionPrompt": true,
+  "teammateMode": "in-process",
+  "skipAutoPermissionPrompt": true,
+  "permissions": {
+    "defaultMode": "auto"
+  }
+}

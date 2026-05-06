@@ -9,8 +9,8 @@ if [ -n "$BASH_VERSION" ]; then
 	alias srcset='source ~/.bashrc'
 	alias runset='. ~/.bash_aliases'
 elif [ -n "$ZSH_VERSION" ]; then
-	alias srcset='source ${ZDOTDIR:-$HOME}/.zshrc'
-	alias runset='. ${ZDOTDIR:-$HOME}/aliases.zsh'
+	alias srcset='source ${ZDOTDIR:-${XDG_CONFIG_HOME:-$HOME/.config}/zsh}/.zshrc'
+	alias runset='. ${ZDOTDIR:-${XDG_CONFIG_HOME:-$HOME/.config}/zsh}/aliases.zsh'
   setopt HIST_IGNORE_SPACE
   setopt TRAPS_ASYNC  # deliver signals during ZLE so TRAPUSR1 fires at the prompt
 

@@ -5,6 +5,9 @@
     "CLAUDE_CODE_PLAN_MODE_REQUIRED": "false",
     "CTX_WARN_THRESHOLD": "25"
   },
+  "permissions": {
+    "defaultMode": "auto"
+  },
   "model": "opus[1m]",
   "hooks": {
     "Stop": [
@@ -44,13 +47,18 @@
     "frontend-design@claude-plugins-official": true,
     "slack@claude-plugins-official": true,
     "atlassian@claude-plugins-official": true,
-    "caveman@claude-plugins-official": true
+    "caveman@caveman": true
+  },
+  "extraKnownMarketplaces": {
+    "caveman": {
+      "source": {
+        "source": "github",
+        "repo": "JuliusBrussee/caveman"
+      }
+    }
   },
   "alwaysThinkingEnabled": true,
   "skipDangerousModePermissionPrompt": true,
   "teammateMode": "in-process",
-  "skipAutoPermissionPrompt": true,
-  "permissions": {
-    "defaultMode": "auto"
-  }
+  "skipAutoPermissionPrompt": true
 }

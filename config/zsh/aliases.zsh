@@ -311,6 +311,32 @@ tmux-reset(){
 }
 
 
+# Kill the tmux server, then install/update all TPM plugins from a plain shell.
+# Must be run from OUTSIDE tmux — kill-server kicks you out of the current
+# shell otherwise. After it returns, start fresh with `tmux` or `tmux-new`.
+tmux-refresh() {
+    if [ -n "$TMUX" ]; then
+        echo "tmux-refresh: detach first (prefix + d), then re-run from a plain shell." >&2
+        return 1
+    fi
+    local tpm_bin="$HOME/.tmux/plugins/tpm/bin"
+    if [ ! -x "$tpm_bin/install_plugins" ]; then
+        echo "tmux-refresh: TPM not installed at $tpm_bin." >&2
+        echo "  Run ~/dotfiles/bootstrap.sh first." >&2
+        return 1
+    fi
+    if tmux info >/dev/null 2>&1; then
+        echo "Killing tmux server..."
+        tmux kill-server
+    fi
+    echo "Installing missing plugins..."
+    "$tpm_bin/install_plugins" || return 1
+    echo "Updating all plugins..."
+    "$tpm_bin/update_plugins" all || return 1
+    echo "Done. Start tmux with 'tmux' or 'tmux-new <name>'."
+}
+
+
 # Send a command to tmux sessions
 # Usage:
 #   tmux-send-all "echo hello"          # send to active pane of every session

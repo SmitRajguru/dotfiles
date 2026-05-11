@@ -28,6 +28,23 @@ git clone <this-repo> ~/dotfiles
 ~/dotfiles/sync.sh
 ```
 
+## Tmux: reload config, install/update plugins
+
+The prefix is rebound to `Ctrl+Space` (not the default `Ctrl+B`).
+
+- `Ctrl+Space r` — reload `tmux.conf`
+- `Ctrl+Space I` (capital I) — install missing TPM plugins
+- `Ctrl+Space U` — update all plugins
+- `Ctrl+Space alt+u` — clean plugins no longer in the config
+
+If `tmux.conf` was symlinked while a tmux server was already running, the running sessions won't pick up the new config or plugins until the server is restarted. For a full cycle (kill server, reinstall/update all plugins) from a plain shell — must be run **outside** tmux:
+
+```bash
+tmux-refresh
+```
+
+Then start fresh with `tmux` or `tmux-new <name>`.
+
 ## XDG layout
 
 - `ZDOTDIR=$XDG_CONFIG_HOME/zsh` — `.zshrc`, `.zshenv`, `aliases.zsh` live here. A thin `~/.zshenv` stub sets `ZDOTDIR` and forwards.

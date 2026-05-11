@@ -134,6 +134,24 @@ git-new-branch(){
 }
 
 # -------------------------------------------------------------------
+# claude — wrapper that ensures ssh-agent has a key before launch.
+# Why: ssh-add inside Claude Code hangs (its Bash tool runs non-interactively,
+# so the passphrase prompt has no stdin). Catching an empty agent here, in
+# the interactive shell, lets ssh-add actually prompt for the passphrase.
+# Bypass with `command claude` if you really want to launch without keys.
+# -------------------------------------------------------------------
+claude() {
+    if ! ssh-add -l >/dev/null 2>&1; then
+        print -P -u2 "%F{yellow}ssh-agent has no keys; running ssh-add first.%f"
+        if ! ssh-add; then
+            print -P -u2 "%F{red}ssh-add failed; not launching claude.%f"
+            return 1
+        fi
+    fi
+    command claude "$@"
+}
+
+# -------------------------------------------------------------------
 # wt — Worktree management: push, pull, swap
 #   wt push <worktree> [switch-to]          Current branch → worktree, main → [switch-to] (default: master)
 #   wt pull <worktree>                      Worktree branch → main dir, remove worktree

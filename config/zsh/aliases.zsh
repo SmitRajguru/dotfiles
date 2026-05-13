@@ -134,6 +134,54 @@ git-new-branch(){
 }
 
 # -------------------------------------------------------------------
+# _git_resolve_branch — ensure a branch is reachable, fetching if remote-only.
+# Echoes "local" or "remote:<remote>" on success.
+# Usage: _git_resolve_branch <branch> [remote] [repo-path]
+# -------------------------------------------------------------------
+_git_resolve_branch() {
+    local branch="$1" remote="${2:-origin}" repo="${3:-.}"
+    if [[ -z "$branch" ]]; then
+        echo "Error: branch name cannot be empty" >&2
+        return 1
+    fi
+    if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+        echo "local"
+        return 0
+    fi
+    if ! git -C "$repo" show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+        echo "Fetching $remote/$branch..." >&2
+        git -C "$repo" fetch "$remote" "+refs/heads/${branch}:refs/remotes/${remote}/${branch}" >&2 || return 1
+    fi
+    if git -C "$repo" show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+        echo "remote:$remote"
+        return 0
+    fi
+    echo "Error: branch '$branch' not found locally or on $remote" >&2
+    return 1
+}
+
+# -------------------------------------------------------------------
+# git-checkout-remote — checkout a branch, fetching from remote if needed.
+# Sets up tracking when the branch only exists on the remote.
+# Usage: git-checkout-remote <branch> [remote]   (default remote: origin)
+# -------------------------------------------------------------------
+git-checkout-remote() {
+    if [ -z "$1" ]; then
+        echo "Error: branch name cannot be empty"
+        return 1
+    fi
+    local branch="$1" remote="${2:-origin}"
+    cls
+    local source
+    source=$(_git_resolve_branch "$branch" "$remote") || return 1
+    if [[ "$source" == "local" ]]; then
+        git checkout "$branch"
+    else
+        git checkout -b "$branch" --track "${source#remote:}/$branch"
+    fi
+}
+
+# -------------------------------------------------------------------
 # claude — wrapper that ensures ssh-agent has a key before launch.
 # Why: ssh-add inside Claude Code hangs (its Bash tool runs non-interactively,
 # so the passphrase prompt has no stdin). Catching an empty agent here, in
@@ -152,10 +200,12 @@ claude() {
 }
 
 # -------------------------------------------------------------------
-# wt — Worktree management: push, pull, swap
+# wt — Worktree management: push, pull, swap, add, rm
 #   wt push <worktree> [switch-to]          Current branch → worktree, main → [switch-to] (default: master)
 #   wt pull <worktree>                      Worktree branch → main dir, remove worktree
 #   wt swap <worktree> [new-worktree-name]  Swap main dir branch ↔ worktree
+#   wt add <worktree> <branch> [remote]     Fetch + add remote branch as a new worktree
+#   wt rm [-f] <worktree>                   Remove worktree (-f to force when dirty)
 #   wt list                                 List all worktrees
 # -------------------------------------------------------------------
 wt() {
@@ -230,6 +280,54 @@ wt() {
             git worktree add "$WT_DIR/$new_wt_name" "$cur_branch" || return 1
             echo "Done."
             ;;
+        add)
+            local wt_name="$1" branch="$2" remote="${3:-origin}"
+            if [[ -z "$wt_name" || -z "$branch" ]]; then
+                echo "Usage: wt add <worktree-name> <branch> [remote]  (default remote: origin)"
+                return 1
+            fi
+            local wt_path="$WT_DIR/$wt_name"
+            if [[ -e "$wt_path" ]]; then
+                echo "Error: $wt_path already exists"
+                return 1
+            fi
+            local source
+            source=$(_git_resolve_branch "$branch" "$remote" "$MAIN_REPO") || return 1
+            echo "add: $branch → ~/worktrees/$wt_name (source: $source)"
+            if [[ "$source" == "local" ]]; then
+                git -C "$MAIN_REPO" worktree add "$wt_path" "$branch" || return 1
+            else
+                # Use the explicit refs/remotes/... path as start-point so the worktree add
+                # works even when remote.<remote>.fetch refspecs don't map this branch.
+                # Then set tracking via config (--track / --set-upstream-to also check refspecs).
+                git -C "$MAIN_REPO" worktree add --no-track -b "$branch" "$wt_path" "refs/remotes/${remote}/${branch}" || return 1
+                git -C "$MAIN_REPO" config "branch.${branch}.remote" "$remote"
+                git -C "$MAIN_REPO" config "branch.${branch}.merge" "refs/heads/${branch}"
+            fi
+            echo "Done. worktree=~/worktrees/$wt_name ($branch)"
+            ;;
+        rm|remove)
+            local force=0 wt_name="$1"
+            if [[ "$1" == "-f" || "$1" == "--force" ]]; then
+                force=1
+                wt_name="$2"
+            fi
+            if [[ -z "$wt_name" ]]; then
+                echo "Usage: wt rm [-f] <worktree>"
+                return 1
+            fi
+            local wt_path="$WT_DIR/$wt_name"
+            [[ -d "$wt_path" ]] || { echo "Error: no worktree at $wt_path"; return 1; }
+            local target_branch
+            target_branch=$(__wt_branch "$wt_path")
+            echo "rm: removing ~/worktrees/$wt_name (${target_branch:-detached})"
+            if (( force )); then
+                git -C "$MAIN_REPO" worktree remove --force "$wt_path" || return 1
+            else
+                git -C "$MAIN_REPO" worktree remove "$wt_path" || return 1
+            fi
+            echo "Done."
+            ;;
         list|ls)
             git -C "$MAIN_REPO" worktree list
             ;;
@@ -241,6 +339,8 @@ Commands:
   push <worktree> [switch-to]          Current branch → worktree, main → [switch-to] (default: master)
   pull <worktree>                      Worktree branch → main dir, remove worktree
   swap <worktree> [new-worktree-name]  Swap main dir branch ↔ worktree
+  add <worktree> <branch> [remote]     Fetch + add remote branch as a new worktree
+  rm [-f] <worktree>                   Remove worktree (-f to force when dirty)
   list                                 List all worktrees
 USAGE
             return 1
@@ -514,18 +614,20 @@ if [ -n "$ZSH_VERSION" ] && (( $+functions[compdef] )); then
     _wt() {
         if (( CURRENT == 2 )); then
             local -a vals disp
-            vals=(push pull swap list)
+            vals=(push pull swap add rm list)
             disp=(
                 "push  -- Current branch → worktree, main → switch-to"
                 "pull  -- Worktree branch → main dir"
                 "swap  -- Swap main dir branch ↔ worktree"
+                "add   -- Fetch + add remote branch as a new worktree"
+                "rm    -- Remove worktree (-f to force when dirty)"
                 "list  -- List all worktrees"
             )
             compadd -l -d disp -a vals
             return
         fi
         case "${words[2]}" in
-            pull|swap)
+            pull|swap|rm|remove)
                 if (( CURRENT == 3 )); then
                     local -a wts
                     wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
@@ -536,6 +638,13 @@ if [ -n "$ZSH_VERSION" ] && (( $+functions[compdef] )); then
                 if (( CURRENT == 4 )); then
                     local -a branches
                     branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch --format='%(refname:short)' 2>/dev/null)"})
+                    compadd -a branches
+                fi
+                ;;
+            add)
+                if (( CURRENT == 4 )); then
+                    local -a branches
+                    branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
                     compadd -a branches
                 fi
                 ;;
@@ -592,11 +701,11 @@ elif [ -n "$BASH_VERSION" ]; then
         local cur="${COMP_WORDS[COMP_CWORD]}"
         local subcmd="${COMP_WORDS[1]}"
         if (( COMP_CWORD == 1 )); then
-            COMPREPLY=($(compgen -W "push pull swap list" -- "$cur"))
+            COMPREPLY=($(compgen -W "push pull swap add rm list" -- "$cur"))
             return
         fi
         case "$subcmd" in
-            pull|swap)
+            pull|swap|rm|remove)
                 if (( COMP_CWORD == 2 )); then
                     COMPREPLY=($(compgen -W "$(ls -1 "$HOME/worktrees" 2>/dev/null)" -- "$cur"))
                 fi
@@ -604,6 +713,11 @@ elif [ -n "$BASH_VERSION" ]; then
             push)
                 if (( COMP_CWORD == 3 )); then
                     COMPREPLY=($(compgen -W "$(git -C "${MAIN_REPO:-$HOME}" branch --format='%(refname:short)' 2>/dev/null)" -- "$cur"))
+                fi
+                ;;
+            add)
+                if (( COMP_CWORD == 3 )); then
+                    COMPREPLY=($(compgen -W "$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)" -- "$cur"))
                 fi
                 ;;
         esac

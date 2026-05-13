@@ -38,37 +38,113 @@ else
 fi
 
 ###############################################################################
-log "2. tmux >= 3.5 (build from source if needed)"
+log "2. tmux >= 3.5 (build latest from source if apt too old)"
 ###############################################################################
-TMUX_PIN="${TMUX_VERSION:-3.5a}"
+# Floor = semantic minimum we need (catppuccin status-format[1] needs 3.5+).
+# If apt-installed tmux already meets the floor, use it. Otherwise resolve the
+# latest tag from GitHub and build that — no hard-coded pin.
+TMUX_FLOOR_MAJOR=3
+TMUX_FLOOR_MINOR=5
 need_build=1
 if have tmux; then
   ver=$(tmux -V | awk '{print $2}')
   major=$(echo "$ver" | cut -d. -f1)
   minor=$(echo "$ver" | cut -d. -f2 | tr -d 'a-z')
-  if [ "$major" -gt 3 ] || { [ "$major" = "3" ] && [ "$minor" -ge 5 ]; }; then
-    echo "tmux $ver already >= 3.5; skipping source build."
+  if [ "$major" -gt "$TMUX_FLOOR_MAJOR" ] || { [ "$major" = "$TMUX_FLOOR_MAJOR" ] && [ "$minor" -ge "$TMUX_FLOOR_MINOR" ]; }; then
+    echo "tmux $ver already >= ${TMUX_FLOOR_MAJOR}.${TMUX_FLOOR_MINOR}; using apt version."
     need_build=0
   else
-    echo "tmux $ver < 3.5; will build $TMUX_PIN from source."
+    echo "tmux $ver < ${TMUX_FLOOR_MAJOR}.${TMUX_FLOOR_MINOR}; will resolve latest from github.com/tmux/tmux."
   fi
 fi
 if [ "$need_build" = 1 ]; then
+  echo "Resolving latest tmux release tag via github.com redirect (30s timeout)..."
+  # Follow the /releases/latest redirect; the redirect URL ends with /tag/<tag>.
+  # Avoids api.github.com (lower rate limit, sometimes proxy-blocked).
+  TMUX_LATEST=$(curl -fsSI -o /dev/null -w '%{redirect_url}' --max-time 30 https://github.com/tmux/tmux/releases/latest | sed 's|.*/tag/||' | tr -d '\r\n')
+  if [ -z "$TMUX_LATEST" ]; then
+    echo "ERROR: could not resolve latest tmux release tag (no redirect)." >&2
+    exit 1
+  fi
+  echo "Latest tmux: $TMUX_LATEST"
+  echo "Building tmux $TMUX_LATEST from source..."
   TMP=$(mktemp -d)
   pushd "$TMP" >/dev/null
-  curl -fLO "https://github.com/tmux/tmux/releases/download/${TMUX_PIN}/tmux-${TMUX_PIN}.tar.gz"
-  tar xzf "tmux-${TMUX_PIN}.tar.gz"
-  cd "tmux-${TMUX_PIN}"
+  curl -fLO "https://github.com/tmux/tmux/releases/download/${TMUX_LATEST}/tmux-${TMUX_LATEST}.tar.gz"
+  tar xzf "tmux-${TMUX_LATEST}.tar.gz"
+  cd "tmux-${TMUX_LATEST}"
   ./configure
   make -j"$(nproc)"
   sudo make install
   popd >/dev/null
   rm -rf "$TMP"
-  echo "Installed tmux $TMUX_PIN."
+  echo "Installed tmux $TMUX_LATEST."
 fi
 
 ###############################################################################
-log "3. ruby gems"
+log "3. fzf >= 0.53 (binary from github releases if apt too old)"
+###############################################################################
+# Floor = 0.53 (first version with `--tmux` popup flag used in FZF_DEFAULT_OPTS).
+# If apt fzf meets the floor, keep it. Otherwise install the latest binary
+# release into /usr/local/bin (precedes /usr/bin in PATH).
+FZF_FLOOR_MAJOR=0
+FZF_FLOOR_MINOR=53
+need_fzf=1
+if have fzf; then
+  fzf_path=$(command -v fzf)
+  # Run fzf --version with FZF_DEFAULT_OPTS unset, in case the env has flags
+  # the installed fzf doesn't understand (the exact bug we're fixing). Also
+  # `|| true` to defang any pipefail/errexit propagation from old fzf exiting
+  # non-zero before printing version.
+  ver=$(FZF_DEFAULT_OPTS= fzf --version 2>/dev/null | awk '{print $1}' || true)
+  echo "Detected fzf at $fzf_path, version: ${ver:-<unparsed>}"
+  if [ -n "$ver" ]; then
+    major=$(echo "$ver" | cut -d. -f1)
+    minor=$(echo "$ver" | cut -d. -f2)
+    if [ "$major" -gt "$FZF_FLOOR_MAJOR" ] || { [ "$major" = "$FZF_FLOOR_MAJOR" ] && [ "$minor" -ge "$FZF_FLOOR_MINOR" ]; }; then
+      echo "fzf $ver >= ${FZF_FLOOR_MAJOR}.${FZF_FLOOR_MINOR}; using existing version."
+      need_fzf=0
+    else
+      echo "fzf $ver < ${FZF_FLOOR_MAJOR}.${FZF_FLOOR_MINOR}; will fetch latest from github.com/junegunn/fzf."
+    fi
+  else
+    echo "Could not parse fzf version; will fetch latest."
+  fi
+else
+  echo "fzf not installed; will fetch latest from github.com/junegunn/fzf."
+fi
+if [ "$need_fzf" = 1 ]; then
+  echo "Resolving latest fzf release tag via github.com redirect (30s timeout)..."
+  # Follow the /releases/latest redirect; the redirect URL ends with /tag/v<ver>.
+  # Avoids api.github.com (lower rate limit; some corporate networks 403 it).
+  FZF_LATEST=$(curl -fsSI -o /dev/null -w '%{redirect_url}' --max-time 30 https://github.com/junegunn/fzf/releases/latest | sed 's|.*/tag/v||' | tr -d '\r\n')
+  if [ -z "$FZF_LATEST" ]; then
+    echo "ERROR: could not resolve latest fzf release tag (no redirect)." >&2
+    exit 1
+  fi
+  echo "Latest fzf: $FZF_LATEST"
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64)  FZF_ARCH=amd64 ;;
+    aarch64) FZF_ARCH=arm64 ;;
+    *) echo "ERROR: unsupported arch for fzf binary: $arch" >&2; exit 1 ;;
+  esac
+  TARBALL="fzf-${FZF_LATEST}-linux_${FZF_ARCH}.tar.gz"
+  TMP=$(mktemp -d)
+  pushd "$TMP" >/dev/null
+  echo "Downloading $TARBALL..."
+  curl -fL --max-time 120 -O "https://github.com/junegunn/fzf/releases/download/v${FZF_LATEST}/${TARBALL}"
+  echo "Extracting..."
+  tar xzf "$TARBALL"
+  echo "Installing to /usr/local/bin/fzf (will prompt for sudo)..."
+  sudo install -m 755 fzf /usr/local/bin/fzf
+  popd >/dev/null
+  rm -rf "$TMP"
+  echo "Installed: $(/usr/local/bin/fzf --version)"
+fi
+
+###############################################################################
+log "4. ruby gems"
 ###############################################################################
 if ! gem list -i public_suffix -v 5.1.1 >/dev/null 2>&1; then
   sudo gem install public_suffix -v 5.1.1
@@ -78,7 +154,7 @@ if ! have colorls; then
 fi
 
 ###############################################################################
-log "4. default shell -> zsh"
+log "5. default shell -> zsh"
 ###############################################################################
 if [ "$(getent passwd "$USER" | cut -d: -f7)" != "/bin/zsh" ]; then
   echo "Changing default shell to /bin/zsh (you'll be prompted for password)..."
@@ -88,7 +164,7 @@ else
 fi
 
 ###############################################################################
-log "5. tpm (tmux plugin manager)"
+log "6. tpm (tmux plugin manager)"
 ###############################################################################
 if [ ! -d "$HOME/.tmux/plugins/tpm" ]; then
   git clone https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
@@ -97,7 +173,7 @@ else
 fi
 
 ###############################################################################
-log "6. oh-my-zsh"
+log "7. oh-my-zsh"
 ###############################################################################
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
   RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
@@ -108,7 +184,7 @@ fi
 ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
 
 ###############################################################################
-log "7. zsh plugins (autosuggestions, syntax-highlighting)"
+log "8. zsh plugins (autosuggestions, syntax-highlighting)"
 ###############################################################################
 clone_if_missing() {
   local url="$1" dst="$2"
@@ -124,13 +200,13 @@ clone_if_missing https://github.com/zsh-users/zsh-syntax-highlighting.git \
   "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
 
 ###############################################################################
-log "8. powerlevel10k theme"
+log "9. powerlevel10k theme"
 ###############################################################################
 clone_if_missing https://github.com/romkatv/powerlevel10k.git \
   "$ZSH_CUSTOM/themes/powerlevel10k"
 
 ###############################################################################
-log "9. MesloLGS NF fonts"
+log "10. MesloLGS NF fonts"
 ###############################################################################
 mkdir -p "$HOME/.fonts"
 FONT_BASE="https://github.com/romkatv/powerlevel10k-media/raw/master"
@@ -155,7 +231,7 @@ else
 fi
 
 ###############################################################################
-log "10. Claude Code CLI"
+log "11. Claude Code CLI"
 ###############################################################################
 if have claude; then
   echo "Claude Code already installed."
@@ -164,7 +240,7 @@ else
 fi
 
 ###############################################################################
-log "11. symlinks (setup.sh)"
+log "12. symlinks (setup.sh)"
 ###############################################################################
 "$REPO/setup.sh"
 

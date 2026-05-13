@@ -58,9 +58,7 @@
         "preserveColors": true,
         "timeout": 1500
       }
-    ],
-    [],
-    []
+    ]
   ],
   "flexMode": "full",
   "compactThreshold": 60,

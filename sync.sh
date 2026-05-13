@@ -4,8 +4,13 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
+
+printf '\n========== dotfiles sync — start ==========\n'
+
 cd "$REPO"
 git pull --recurse-submodules
 git submodule update --init --recursive 2>/dev/null || true
 
 "$REPO/setup.sh"
+
+printf '========== dotfiles sync — done ===========\n\n'

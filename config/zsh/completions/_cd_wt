@@ -1,0 +1,29 @@
+#compdef cd-wt
+
+# cd-wt completions: worktree directory names + branch names in one menu.
+# Lives on $fpath (prepended in $ZDOTDIR/.zshenv).
+
+local -a vals disp
+local MAIN_REPO="${MAIN_REPO:-$HOME}"
+local wt_path="" wt_branch="" wt_name=""
+while IFS= read -r line; do
+    if [[ "$line" == worktree\ * ]]; then
+        wt_path="${line#worktree }"
+    elif [[ "$line" == branch\ refs/heads/* ]]; then
+        wt_branch="${line#branch refs/heads/}"
+    elif [[ -z "$line" && -n "$wt_path" ]]; then
+        if [[ "$wt_path" == "$MAIN_REPO" ]]; then
+            wt_name=$(basename "$MAIN_REPO")
+        else
+            wt_name="${wt_path##*/}"
+        fi
+        vals+=("$wt_name")
+        disp+=("$wt_name  -- ${wt_branch:-detached}")
+        if [[ -n "$wt_branch" ]]; then
+            vals+=("$wt_branch")
+            disp+=("$wt_branch  -- $wt_name")
+        fi
+        wt_path="" wt_branch="" wt_name=""
+    fi
+done < <(git -C "$MAIN_REPO" worktree list --porcelain; echo)
+compadd -l -d disp -a vals

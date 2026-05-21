@@ -620,107 +620,16 @@ alias netcheck='cls; netstat -tulpn'
 # Tab completions
 # -------------------------------------------------------------------
 if [ -n "$ZSH_VERSION" ] && (( $+functions[compdef] )); then
-    # wt: subcommands, worktree names, branch names
-    _wt() {
-        if (( CURRENT == 2 )); then
-            local -a vals disp
-            vals=(push pull swap add rm list)
-            disp=(
-                "push  -- Current branch → worktree, main → switch-to"
-                "pull  -- Worktree branch → main dir"
-                "swap  -- Swap main dir branch ↔ worktree"
-                "add   -- Fetch + add remote branch as a new worktree"
-                "rm    -- Remove worktree (-f to force when dirty)"
-                "list  -- List all worktrees"
-            )
-            compadd -l -d disp -a vals
-            return
-        fi
-        case "${words[2]}" in
-            pull|swap|rm|remove)
-                if (( CURRENT == 3 )); then
-                    local -a wts
-                    wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
-                    compadd -a wts
-                fi
-                ;;
-            push)
-                if (( CURRENT == 4 )); then
-                    local -a branches
-                    branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch --format='%(refname:short)' 2>/dev/null)"})
-                    compadd -a branches
-                fi
-                ;;
-            add)
-                if (( CURRENT == 4 )); then
-                    local -a branches
-                    branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
-                    compadd -a branches
-                fi
-                ;;
-        esac
-    }
+    # Completion functions for wt / cd-wt / tmux-new / tmux-reset live as
+    # autoload #compdef files under $ZDOTDIR/completions/ (prepended to fpath
+    # in $ZDOTDIR/.zshenv). compinit picks them up automatically and rebuilds
+    # _comps from fpath, so any number of later-sourced rc files calling
+    # compinit again can't drop these bindings. Only the menu-select zstyles
+    # stay here.
     zstyle ':completion:*:*:wt:*' menu select
-    compdef _wt wt
-
-    # cd-wt: worktree directory names + branch names with menu select
-    _cd_wt() {
-        local -a vals disp
-        local MAIN_REPO="${MAIN_REPO:-$HOME}"
-        local wt_path="" wt_branch="" wt_name=""
-        while IFS= read -r line; do
-            if [[ "$line" == worktree\ * ]]; then
-                wt_path="${line#worktree }"
-            elif [[ "$line" == branch\ refs/heads/* ]]; then
-                wt_branch="${line#branch refs/heads/}"
-            elif [[ -z "$line" && -n "$wt_path" ]]; then
-                if [[ "$wt_path" == "$MAIN_REPO" ]]; then
-                    wt_name=$(basename "$MAIN_REPO")
-                else
-                    wt_name="${wt_path##*/}"
-                fi
-                vals+=("$wt_name")
-                disp+=("$wt_name  -- ${wt_branch:-detached}")
-                if [[ -n "$wt_branch" ]]; then
-                    vals+=("$wt_branch")
-                    disp+=("$wt_branch  -- $wt_name")
-                fi
-                wt_path="" wt_branch="" wt_name=""
-            fi
-        done < <(git -C "$MAIN_REPO" worktree list --porcelain; echo)
-        compadd -l -d disp -a vals
-    }
     zstyle ':completion:*:*:cd-wt:*' menu select
-    compdef _cd_wt cd-wt
-
-    # tmux-new: complete existing session names
-    _tmux_new() {
-        local -a sessions
-        sessions=(${(@f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null)"})
-        compadd -a sessions
-    }
     zstyle ':completion:*:*:tmux-new:*' menu select
     zstyle ':completion:*:*:tmux-reset:*' menu select
-    compdef _tmux_new tmux-new
-
-    # tmux-reset: complete existing session names
-    compdef _tmux_new tmux-reset
-
-    # Defer-register fallback: if a later-sourced file (a local overlay, an
-    # org-specific shell init, etc.) calls compinit again, it rebuilds _comps
-    # from fpath and silently drops the compdef bindings made above (these
-    # functions are inline, not on fpath). Re-register on the first precmd,
-    # after all rc-time init has run. The hook self-removes after one fire
-    # (compdef is idempotent regardless).
-    _dotfiles_register_compdefs() {
-        compdef _wt wt 2>/dev/null
-        compdef _cd_wt cd-wt 2>/dev/null
-        compdef _tmux_new tmux-new 2>/dev/null
-        compdef _tmux_new tmux-reset 2>/dev/null
-        add-zsh-hook -d precmd _dotfiles_register_compdefs
-    }
-    autoload -Uz add-zsh-hook
-    add-zsh-hook precmd _dotfiles_register_compdefs
 
 elif [ -n "$BASH_VERSION" ]; then
     _wt_completion() {

@@ -19,3 +19,12 @@ if ! _ssh_agent_alive; then
 fi
 unset -f _ssh_agent_alive
 unset _ssh_agent_env
+
+# --- Completion fpath ---
+# Prepend $ZDOTDIR/completions so autoload-style #compdef files are visible to
+# every compinit call (OMZ's first one, plus any later overlay that calls
+# compinit again). Lives in .zshenv so fpath is set before .zshrc runs and
+# before any compinit fires.
+if [ -d "${ZDOTDIR:-$HOME}/completions" ]; then
+    fpath=("${ZDOTDIR:-$HOME}/completions" $fpath)
+fi

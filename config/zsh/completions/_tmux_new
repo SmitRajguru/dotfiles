@@ -1,0 +1,8 @@
+#compdef tmux-new tmux-reset
+
+# tmux-new / tmux-reset completions: existing tmux session names.
+# Lives on $fpath (prepended in $ZDOTDIR/.zshenv).
+
+local -a sessions
+sessions=(${(@f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null)"})
+compadd -a sessions

@@ -5,6 +5,16 @@ alias p10k-wizard='p10k configure'
 export HISTTIMEFORMAT="%d/%m/%y %T "
 export PATH=/home/srajguru/.local/bin:$PATH
 
+# rbenv (ruby version manager). Builds ruby from source into ~/.rbenv; shims
+# under ~/.rbenv/shims dispatch to the active version. Skipped if rbenv isn't
+# installed yet (bootstrap step 5 hasn't run, or this machine doesn't need it).
+if [ -d "$HOME/.rbenv" ]; then
+  export PATH="$HOME/.rbenv/bin:$PATH"
+  if command -v rbenv >/dev/null 2>&1; then
+    eval "$(rbenv init - zsh)"
+  fi
+fi
+
 if [ -n "$BASH_VERSION" ]; then
 	alias srcset='source ~/.bashrc'
 	alias runset='. ~/.bash_aliases'
@@ -695,6 +705,22 @@ if [ -n "$ZSH_VERSION" ] && (( $+functions[compdef] )); then
 
     # tmux-reset: complete existing session names
     compdef _tmux_new tmux-reset
+
+    # Defer-register fallback: if a later-sourced file (a local overlay, an
+    # org-specific shell init, etc.) calls compinit again, it rebuilds _comps
+    # from fpath and silently drops the compdef bindings made above (these
+    # functions are inline, not on fpath). Re-register on the first precmd,
+    # after all rc-time init has run. The hook self-removes after one fire
+    # (compdef is idempotent regardless).
+    _dotfiles_register_compdefs() {
+        compdef _wt wt 2>/dev/null
+        compdef _cd_wt cd-wt 2>/dev/null
+        compdef _tmux_new tmux-new 2>/dev/null
+        compdef _tmux_new tmux-reset 2>/dev/null
+        add-zsh-hook -d precmd _dotfiles_register_compdefs
+    }
+    autoload -Uz add-zsh-hook
+    add-zsh-hook precmd _dotfiles_register_compdefs
 
 elif [ -n "$BASH_VERSION" ]; then
     _wt_completion() {

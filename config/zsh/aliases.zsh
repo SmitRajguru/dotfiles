@@ -1025,17 +1025,30 @@ p10k-branch-prompt-watcher() {
   echo "[$(date +%H:%M:%S)] Watcher running (every ${interval}s). Ctrl-C to stop."
 
   trap 'echo; echo "Watcher stopped."; return 0' INT
+  typeset -A seen
   while :; do
     sleep "$interval"
-    # Re-discover worktrees each cycle (picks up new ones automatically)
+    seen=()
+    # Re-discover worktrees each cycle. New ones get a "Watching" log line;
+    # branch changes on known wts trigger a pane refresh.
     while IFS= read -r wt; do
+      seen[$wt]=1
       cur="$(__branch_of "$wt")"
-      if [[ -n "${branches[$wt]:-}" && "$cur" != "${branches[$wt]}" ]]; then
+      if [[ -z "${branches[$wt]+set}" ]]; then
+        echo "[$(date +%H:%M:%S)] Watching $wt @ $cur (new)"
+      elif [[ "$cur" != "${branches[$wt]}" ]]; then
         echo "[$(date +%H:%M:%S)] $wt: ${branches[$wt]} -> $cur"
         _refresh_panes_for_path "$wt"
       fi
       branches[$wt]="$cur"
     done < <(git -C "$main_repo" worktree list --porcelain | awk '/^worktree /{print $2}')
+    # Drop entries for worktrees that disappeared since last cycle.
+    for wt in ${(k)branches}; do
+      if [[ -z "${seen[$wt]:-}" ]]; then
+        echo "[$(date +%H:%M:%S)] Stopped watching $wt (removed)"
+        unset "branches[$wt]"
+      fi
+    done
   done
 }
 

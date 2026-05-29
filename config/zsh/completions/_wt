@@ -88,12 +88,13 @@ case "${words[2]}" in
         compadd -l -d fdisp -a flags
         ;;
     prune)
-        # `wt prune [-y]`
+        # `wt prune [-y] [--sudo]`
         local -a flags fdisp
-        flags=(-y --yes)
+        flags=(-y --yes --sudo)
         fdisp=(
             "-y      -- Skip y/N confirmation"
             "--yes   -- Skip y/N confirmation"
+            "--sudo  -- Prepend sudo to chmod + rm (escape hatch)"
         )
         compadd -l -d fdisp -a flags
         ;;

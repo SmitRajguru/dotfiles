@@ -256,7 +256,7 @@ claude() {
 #   wt sync                                 Run `git sync` (hub sync) in every clean worktree
 #   wt merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
 #   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
-#   wt prune [-y]                           Remove bazel output_base dirs for worktrees that no longer exist
+#   wt prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
 #   wt list                                 List all worktrees
 # -------------------------------------------------------------------
 wt() {
@@ -492,7 +492,10 @@ FORKHELP
                 git -C "$MAIN_REPO" worktree remove "$wt_path" || return 1
             fi
             # Purge any bazel output_base whose recorded workspace path
-            # (DO_NOT_BUILD_HERE) matches the removed worktree.
+            # (DO_NOT_BUILD_HERE) matches the removed worktree. chmod -R u+w
+            # first because bazel sets action outputs read-only. If rm still
+            # fails (e.g., not user-owned), surface the error and suggest
+            # `wt prune --sudo`.
             local bazel_root="$HOME/.cache/bazel/_bazel_$USER" ob ob_name ws
             if [[ -d "$bazel_root" ]]; then
                 for ob in "$bazel_root"/*/(N); do
@@ -501,7 +504,12 @@ FORKHELP
                     [[ -f "${ob}DO_NOT_BUILD_HERE" ]] || continue
                     ws=$(<"${ob}DO_NOT_BUILD_HERE")
                     if [[ "$ws" == "$wt_path" ]]; then
-                        rm -rf "${ob%/}" && echo "  purged bazel cache: ${ob%/}"
+                        chmod -R u+w "${ob%/}" 2>/dev/null
+                        if rm -rf "${ob%/}"; then
+                            echo "  purged bazel cache: ${ob%/}"
+                        else
+                            echo "  failed to purge ${ob%/} (try \`wt prune --sudo\`)" >&2
+                        fi
                     fi
                 done
             fi
@@ -602,17 +610,22 @@ CLEANHELP
             # Scan bazel output_base dirs (~/.cache/bazel/_bazel_$USER/<32-hex>/)
             # and rm -rf any whose recorded workspace path (DO_NOT_BUILD_HERE)
             # no longer exists on disk. Dirs without DO_NOT_BUILD_HERE are
-            # spared (workspace path unknown, can't safely decide).
-            local assume_yes=0
+            # spared (workspace path unknown, can't safely decide). Bazel
+            # sets `chmod -R u-w` on action outputs to protect them, so we
+            # `chmod -R u+w` before rm. --sudo prepends sudo to chmod + rm
+            # if even that fails (e.g., files not owned by $USER).
+            local assume_yes=0 use_sudo=0
             while (( $# )); do
                 case "$1" in
                     -y|--yes) assume_yes=1; shift ;;
+                    --sudo)   use_sudo=1; shift ;;
                     -h|--help)
                         cat <<'PRUNEHELP'
-Usage: wt prune [-y]
+Usage: wt prune [-y] [--sudo]
   Find bazel output_base dirs under ~/.cache/bazel/_bazel_$USER/ whose
-  recorded workspace path (DO_NOT_BUILD_HERE) no longer exists on disk
-  and rm -rf them. y/N prompt; -y skips. IRREVERSIBLE.
+  recorded workspace path (DO_NOT_BUILD_HERE) no longer exists on disk,
+  chmod -R u+w them, then rm -rf. y/N prompt; -y skips. --sudo prepends
+  sudo to chmod and rm for files not owned by $USER. IRREVERSIBLE.
 PRUNEHELP
                         return 0 ;;
                     *)
@@ -656,11 +669,21 @@ PRUNEHELP
                     return 1
                 fi
             fi
-            local ob
+            local ob sudo_cmd=""
+            (( use_sudo )) && sudo_cmd="sudo"
+            local removed=0 failed=0
             for ob in "${orphans[@]}"; do
-                rm -rf "$ob" && echo "  removed $ob"
+                $sudo_cmd chmod -R u+w "$ob" 2>/dev/null
+                if $sudo_cmd rm -rf "$ob"; then
+                    echo "  removed $ob"
+                    removed=$((removed + 1))
+                else
+                    echo "  failed: $ob (try --sudo)" >&2
+                    failed=$((failed + 1))
+                fi
             done
-            echo "Done. Pruned ${#orphans[@]} dir(s)."
+            echo "Done. Pruned $removed dir(s)$( (( failed )) && echo ", $failed failed" )."
+            (( failed )) && return 1
             ;;
         sync)
             # Iterate every worktree (main + linked) and run `git sync`. The
@@ -781,7 +804,7 @@ Commands:
   sync                                 Run `git sync` (hub sync) in every clean worktree
   merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
   clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
-  prune [-y]                           Remove bazel output_base dirs for worktrees that no longer exist
+  prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
   list                                 List all worktrees
 USAGE
             return 1

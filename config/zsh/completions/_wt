@@ -7,14 +7,18 @@
 
 if (( CURRENT == 2 )); then
     local -a vals disp
-    vals=(push pull swap add rm list)
+    vals=(push pull swap fork add rm sync merge clean list)
     disp=(
-        "push  -- Current branch → worktree, main → switch-to"
-        "pull  -- Worktree branch → main dir"
-        "swap  -- Swap main dir branch ↔ worktree"
-        "add   -- Fetch + add remote branch as a new worktree"
-        "rm    -- Remove worktree (-f to force when dirty)"
-        "list  -- List all worktrees"
+        "push   -- Current branch → worktree, main → switch-to"
+        "pull   -- Worktree branch → main dir"
+        "swap   -- Swap main dir branch ↔ worktree"
+        "fork   -- Branch off <ref> into new or existing worktree"
+        "add    -- Add <ref> (branch/tag/sha) as a new worktree"
+        "rm     -- Remove worktree (-f to force when dirty)"
+        "sync   -- Run \`git sync\` in every clean worktree"
+        "merge  -- Merge <ref> (branch/tag/sha) into a worktree"
+        "clean  -- Discard unstaged + remove untracked (IRREVERSIBLE)"
+        "list   -- List all worktrees"
     )
     compadd -l -d disp -a vals
     return
@@ -41,5 +45,79 @@ case "${words[2]}" in
             branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
             compadd -a branches
         fi
+        ;;
+    merge)
+        # `wt merge <branch> [--into <wt>]` — pos 3 is branch (local + remote),
+        # pos 4+ either `--into` literal or wt name when --into precedes it.
+        case "${words[CURRENT-1]}" in
+            --into)
+                local -a wts
+                wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
+                wts+=("$(basename "${MAIN_REPO:-$HOME}")")
+                compadd -a wts
+                return
+                ;;
+        esac
+        if (( CURRENT == 3 )); then
+            local -a branches
+            branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
+            compadd -a branches
+        else
+            compadd -- --into
+        fi
+        ;;
+    clean)
+        # `wt clean [--into <wt>] [-x] [-y]` — flags only; --into takes a wt name.
+        case "${words[CURRENT-1]}" in
+            --into)
+                local -a wts
+                wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
+                wts+=("$(basename "${MAIN_REPO:-$HOME}")")
+                compadd -a wts
+                return
+                ;;
+        esac
+        local -a flags fdisp
+        flags=(--into -x -y)
+        fdisp=(
+            "--into  -- Target a specific worktree"
+            "-x      -- Also remove ignored files"
+            "-y      -- Skip y/N confirmation"
+        )
+        compadd -l -d fdisp -a flags
+        ;;
+    fork)
+        # `wt fork --from <ref> --name <branch> [--into <wt>]`
+        # --from completes worktree names + branch names (tags/SHAs typed).
+        # --into completes worktree names. --name takes no completion.
+        case "${words[CURRENT-1]}" in
+            --from)
+                local -a wts branches refs
+                wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
+                wts+=("$(basename "${MAIN_REPO:-$HOME}")")
+                branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
+                refs=("${wts[@]}" "${branches[@]}")
+                compadd -a refs
+                return
+                ;;
+            --into)
+                local -a wts
+                wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
+                wts+=("$(basename "${MAIN_REPO:-$HOME}")")
+                compadd -a wts
+                return
+                ;;
+            --name)
+                return
+                ;;
+        esac
+        local -a flags fdisp
+        flags=(--from --name --into)
+        fdisp=(
+            "--from  -- Base ref (worktree name / branch / tag / sha)"
+            "--name  -- New branch name"
+            "--into  -- Target worktree (existing → in-place, missing → create)"
+        )
+        compadd -l -d fdisp -a flags
         ;;
 esac

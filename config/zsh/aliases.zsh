@@ -144,51 +144,86 @@ git-new-branch(){
 }
 
 # -------------------------------------------------------------------
-# _git_resolve_branch — ensure a branch is reachable, fetching if remote-only.
-# Echoes "local" or "remote:<remote>" on success.
-# Usage: _git_resolve_branch <branch> [remote] [repo-path]
+# _git_resolve_ref — resolve a ref to its type, fetching if needed.
+# Echoes one of: local | remote:<remote> | tag | sha
+# Resolution order: local branch → remote branch (auto-fetch) → tag
+# (auto-fetch) → SHA (hex regex + rev-parse --verify <ref>^{commit}).
+# Usage: _git_resolve_ref <ref> [remote] [repo-path]
 # -------------------------------------------------------------------
-_git_resolve_branch() {
-    local branch="$1" remote="${2:-origin}" repo="${3:-.}"
-    if [[ -z "$branch" ]]; then
-        echo "Error: branch name cannot be empty" >&2
+_git_resolve_ref() {
+    local ref="$1" remote="${2:-origin}" repo="${3:-.}"
+    if [[ -z "$ref" ]]; then
+        echo "Error: ref cannot be empty" >&2
         return 1
     fi
-    if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+    if git -C "$repo" show-ref --verify --quiet "refs/heads/$ref"; then
         echo "local"
         return 0
     fi
-    if ! git -C "$repo" show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
-        echo "Fetching $remote/$branch..." >&2
-        git -C "$repo" fetch "$remote" "+refs/heads/${branch}:refs/remotes/${remote}/${branch}" >&2 || return 1
+    if ! git -C "$repo" show-ref --verify --quiet "refs/remotes/$remote/$ref"; then
+        git -C "$repo" fetch "$remote" "+refs/heads/${ref}:refs/remotes/${remote}/${ref}" >/dev/null 2>&1 || true
     fi
-    if git -C "$repo" show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+    if git -C "$repo" show-ref --verify --quiet "refs/remotes/$remote/$ref"; then
         echo "remote:$remote"
         return 0
     fi
-    echo "Error: branch '$branch' not found locally or on $remote" >&2
+    if ! git -C "$repo" show-ref --verify --quiet "refs/tags/$ref"; then
+        git -C "$repo" fetch "$remote" "tag" "$ref" >/dev/null 2>&1 || true
+    fi
+    if git -C "$repo" show-ref --verify --quiet "refs/tags/$ref"; then
+        echo "tag"
+        return 0
+    fi
+    if [[ "$ref" =~ ^[0-9a-f]{4,40}$ ]] \
+       && git -C "$repo" rev-parse --verify --quiet "${ref}^{commit}" >/dev/null 2>&1; then
+        echo "sha"
+        return 0
+    fi
+    echo "Error: ref '$ref' not found locally, on $remote, as tag, or as commit SHA" >&2
     return 1
 }
 
 # -------------------------------------------------------------------
-# git-checkout-remote — checkout a branch, fetching from remote if needed.
-# Sets up tracking when the branch only exists on the remote.
-# Usage: git-checkout-remote <branch> [remote]   (default remote: origin)
+# git-checkout-ref — checkout a ref, fetching from remote if needed.
+# Branches: sets up tracking when the branch only exists on the remote.
+# Tags/SHAs: detached HEAD.
+# Usage: git-checkout-ref <ref> [remote]   (default remote: origin)
 # -------------------------------------------------------------------
-git-checkout-remote() {
+git-checkout-ref() {
     if [ -z "$1" ]; then
-        echo "Error: branch name cannot be empty"
+        echo "Error: ref cannot be empty"
         return 1
     fi
-    local branch="$1" remote="${2:-origin}"
+    local ref="$1" remote="${2:-origin}"
     cls
+    # Pre-fetch the specific branch so a stale local refs/remotes/<r>/<branch>
+    # gets updated. _git_resolve_ref only fetches when the ref is missing
+    # entirely, so without this we'd silently check out an old tip.
+    git fetch "$remote" "+refs/heads/${ref}:refs/remotes/${remote}/${ref}" 2>/dev/null || true
     local source
-    source=$(_git_resolve_branch "$branch" "$remote") || return 1
-    if [[ "$source" == "local" ]]; then
-        git checkout "$branch"
-    else
-        git checkout -b "$branch" --track "${source#remote:}/$branch"
-    fi
+    source=$(_git_resolve_ref "$ref" "$remote") || return 1
+    case "$source" in
+        local)
+            git checkout "$ref"
+            ;;
+        remote:*)
+            # Use the explicit refs/remotes/... path as start-point so checkout
+            # works even when remote.<remote>.fetch refspecs don't map this
+            # branch (--track validates against refspecs and rejects unmatched
+            # upstreams with "starting point ... is not a branch"). Then set
+            # tracking via config directly.
+            local r="${source#remote:}"
+            git checkout --no-track -b "$ref" "refs/remotes/${r}/${ref}" || return 1
+            git config "branch.${ref}.remote" "$r"
+            git config "branch.${ref}.merge" "refs/heads/${ref}"
+            ;;
+        tag)
+            git checkout --detach "refs/tags/${ref}"
+            ;;
+        sha)
+            git checkout --detach "$ref"
+            ;;
+    esac
 }
 
 # -------------------------------------------------------------------
@@ -210,12 +245,17 @@ claude() {
 }
 
 # -------------------------------------------------------------------
-# wt — Worktree management: push, pull, swap, add, rm
+# wt — Worktree management: push, pull, swap, fork, add, rm, sync, merge, clean
 #   wt push <worktree> [switch-to]          Current branch → worktree, main → [switch-to] (default: master)
 #   wt pull <worktree>                      Worktree branch → main dir, remove worktree
 #   wt swap <worktree> [new-worktree-name]  Swap main dir branch ↔ worktree
-#   wt add <worktree> <branch> [remote]     Fetch + add remote branch as a new worktree
+#   wt fork --from <ref> --name <branch> [--into <wt>]
+#                                           Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
+#   wt add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
 #   wt rm [-f] <worktree>                   Remove worktree (-f to force when dirty)
+#   wt sync                                 Run `git sync` (hub sync) in every clean worktree
+#   wt merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
+#   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
 #   wt list                                 List all worktrees
 # -------------------------------------------------------------------
 wt() {
@@ -290,10 +330,114 @@ wt() {
             git worktree add "$WT_DIR/$new_wt_name" "$cur_branch" || return 1
             echo "Done."
             ;;
+        fork)
+            # wt fork --from <wt|branch|sha|tag> --name <new-branch> [--into <wt>]
+            # Resolve --from (worktree-name first → HEAD; else local branch,
+            # remote branch w/ auto-fetch, tag w/ auto-fetch, or SHA), then
+            # check out into target worktree as a new branch. New worktree if
+            # --into is missing / not a directory; in-place (refuses if dirty)
+            # if --into points to an existing worktree. --into defaults to
+            # __wt_name_from_branch(--name); errors if that derived path
+            # already exists.
+            local from_ref="" new_branch="" into_name=""
+            while (( $# )); do
+                case "$1" in
+                    --from)
+                        from_ref="$2"; shift 2 ;;
+                    --from=*)
+                        from_ref="${1#--from=}"; shift ;;
+                    --name)
+                        new_branch="$2"; shift 2 ;;
+                    --name=*)
+                        new_branch="${1#--name=}"; shift ;;
+                    --into)
+                        into_name="$2"; shift 2 ;;
+                    --into=*)
+                        into_name="${1#--into=}"; shift ;;
+                    -h|--help)
+                        cat <<'FORKHELP'
+Usage: wt fork --from <ref> --name <new-branch> [--into <wt-name>]
+  Create branch <new-branch> off <ref> in a worktree.
+
+  --from <ref>       worktree name (→ its HEAD), local branch, remote branch
+                     (auto-fetch), tag (auto-fetch), or commit SHA.
+  --name <branch>    name of the new branch (required).
+  --into <wt-name>   target worktree. If existing, in-place checkout (refuses
+                     when dirty). If missing, creates new worktree at <ref>.
+                     Defaults to a name derived from --name; errors if that
+                     derived dir already exists.
+FORKHELP
+                        return 0 ;;
+                    *)
+                        echo "wt fork: unexpected arg: $1" >&2
+                        return 1 ;;
+                esac
+            done
+            if [[ -z "$from_ref" || -z "$new_branch" ]]; then
+                echo "Usage: wt fork --from <ref> --name <new-branch> [--into <wt-name>]"
+                return 1
+            fi
+            if git -C "$MAIN_REPO" show-ref --verify --quiet "refs/heads/$new_branch"; then
+                echo "Error: branch '$new_branch' already exists locally" >&2
+                return 1
+            fi
+            local main_basename resolved_ref="" from_label=""
+            main_basename=$(basename "$MAIN_REPO")
+            # Resolve --from: worktree-name first (matches ~/worktrees/<name>
+            # or basename($MAIN_REPO) → its HEAD). Else fall through to
+            # _git_resolve_ref for branch / remote / tag / sha.
+            if [[ "$from_ref" == "$main_basename" ]]; then
+                resolved_ref=$(__wt_branch "$MAIN_REPO")
+                [[ -z "$resolved_ref" ]] && resolved_ref=$(git -C "$MAIN_REPO" rev-parse HEAD)
+                from_label="wt:$main_basename"
+            elif [[ -d "$WT_DIR/$from_ref" ]]; then
+                resolved_ref=$(__wt_branch "$WT_DIR/$from_ref")
+                [[ -z "$resolved_ref" ]] && resolved_ref=$(git -C "$WT_DIR/$from_ref" rev-parse HEAD)
+                from_label="wt:$from_ref"
+            else
+                local source
+                source=$(_git_resolve_ref "$from_ref" "origin" "$MAIN_REPO") || return 1
+                case "$source" in
+                    local)    resolved_ref="$from_ref"; from_label="$source" ;;
+                    remote:*) resolved_ref="refs/remotes/${source#remote:}/$from_ref"; from_label="$source" ;;
+                    tag)      resolved_ref="refs/tags/$from_ref"; from_label="$source" ;;
+                    sha)      resolved_ref="$from_ref"; from_label="$source" ;;
+                esac
+            fi
+            if [[ -z "$into_name" ]]; then
+                into_name=$(__wt_name_from_branch "$new_branch")
+                if [[ -d "$WT_DIR/$into_name" || "$into_name" == "$main_basename" ]]; then
+                    echo "Error: derived worktree '$into_name' already exists; pass --into <wt>" >&2
+                    return 1
+                fi
+            fi
+            local target_path
+            if [[ "$into_name" == "$main_basename" ]]; then
+                target_path="$MAIN_REPO"
+            else
+                target_path="$WT_DIR/$into_name"
+            fi
+            if [[ -d "$target_path" ]]; then
+                if [[ -n "$(git -C "$target_path" status --porcelain 2>/dev/null)" ]]; then
+                    echo "Error: target worktree is dirty: $target_path" >&2
+                    return 1
+                fi
+                echo "fork: in-place $target_path"
+                echo "  base: $resolved_ref ($from_label)"
+                echo "  new branch: $new_branch"
+                git -C "$target_path" checkout -b "$new_branch" "$resolved_ref" || return 1
+            else
+                echo "fork: new worktree $target_path"
+                echo "  base: $resolved_ref ($from_label)"
+                echo "  new branch: $new_branch"
+                git -C "$MAIN_REPO" worktree add -b "$new_branch" "$target_path" "$resolved_ref" || return 1
+            fi
+            echo "Done. worktree=$target_path ($new_branch)"
+            ;;
         add)
-            local wt_name="$1" branch="$2" remote="${3:-origin}"
-            if [[ -z "$wt_name" || -z "$branch" ]]; then
-                echo "Usage: wt add <worktree-name> <branch> [remote]  (default remote: origin)"
+            local wt_name="$1" ref="$2" remote="${3:-origin}"
+            if [[ -z "$wt_name" || -z "$ref" ]]; then
+                echo "Usage: wt add <worktree-name> <ref> [remote]  (default remote: origin)"
                 return 1
             fi
             local wt_path="$WT_DIR/$wt_name"
@@ -302,19 +446,29 @@ wt() {
                 return 1
             fi
             local source
-            source=$(_git_resolve_branch "$branch" "$remote" "$MAIN_REPO") || return 1
-            echo "add: $branch → ~/worktrees/$wt_name (source: $source)"
-            if [[ "$source" == "local" ]]; then
-                git -C "$MAIN_REPO" worktree add "$wt_path" "$branch" || return 1
-            else
-                # Use the explicit refs/remotes/... path as start-point so the worktree add
-                # works even when remote.<remote>.fetch refspecs don't map this branch.
-                # Then set tracking via config (--track / --set-upstream-to also check refspecs).
-                git -C "$MAIN_REPO" worktree add --no-track -b "$branch" "$wt_path" "refs/remotes/${remote}/${branch}" || return 1
-                git -C "$MAIN_REPO" config "branch.${branch}.remote" "$remote"
-                git -C "$MAIN_REPO" config "branch.${branch}.merge" "refs/heads/${branch}"
-            fi
-            echo "Done. worktree=~/worktrees/$wt_name ($branch)"
+            source=$(_git_resolve_ref "$ref" "$remote" "$MAIN_REPO") || return 1
+            echo "add: $ref → ~/worktrees/$wt_name (source: $source)"
+            case "$source" in
+                local)
+                    git -C "$MAIN_REPO" worktree add "$wt_path" "$ref" || return 1
+                    ;;
+                remote:*)
+                    # Use the explicit refs/remotes/... path as start-point so the worktree add
+                    # works even when remote.<remote>.fetch refspecs don't map this branch.
+                    # Then set tracking via config (--track / --set-upstream-to also check refspecs).
+                    local r="${source#remote:}"
+                    git -C "$MAIN_REPO" worktree add --no-track -b "$ref" "$wt_path" "refs/remotes/${r}/${ref}" || return 1
+                    git -C "$MAIN_REPO" config "branch.${ref}.remote" "$r"
+                    git -C "$MAIN_REPO" config "branch.${ref}.merge" "refs/heads/${ref}"
+                    ;;
+                tag)
+                    git -C "$MAIN_REPO" worktree add --detach "$wt_path" "refs/tags/${ref}" || return 1
+                    ;;
+                sha)
+                    git -C "$MAIN_REPO" worktree add --detach "$wt_path" "$ref" || return 1
+                    ;;
+            esac
+            echo "Done. worktree=~/worktrees/$wt_name ($ref)"
             ;;
         rm|remove)
             local force=0 wt_name="$1"
@@ -341,6 +495,198 @@ wt() {
         list|ls)
             git -C "$MAIN_REPO" worktree list
             ;;
+        clean)
+            # Discard ALL local changes (staged + unstaged) via git reset --hard
+            # HEAD, then remove untracked files/dirs via git clean -fd. The y/N
+            # prompt is the explicit-confirmation gate required for the
+            # reset --hard step. Defaults to cwd's worktree; --into <name>
+            # targets a different one. -x extends git clean to also remove
+            # ignored files (build artifacts, node_modules).
+            local target_path="" into_name="" extend_ignored=0 assume_yes=0
+            while (( $# )); do
+                case "$1" in
+                    --into)
+                        into_name="$2"; shift 2 ;;
+                    --into=*)
+                        into_name="${1#--into=}"; shift ;;
+                    -x|--ignored)
+                        extend_ignored=1; shift ;;
+                    -y|--yes)
+                        assume_yes=1; shift ;;
+                    -h|--help)
+                        cat <<'CLEANHELP'
+Usage: wt clean [--into <worktree>] [-x] [-y]
+  Discard ALL local changes (staged + unstaged) via `git reset --hard HEAD`
+  and remove untracked files/dirs via `git clean -fd` in the target worktree.
+  IRREVERSIBLE.
+
+Options:
+  --into <worktree>  Target a specific worktree (default: cwd's worktree)
+  -x, --ignored      Also remove ignored files (git clean -fdx)
+  -y, --yes          Skip the y/N confirmation prompt
+CLEANHELP
+                        return 0 ;;
+                    *)
+                        echo "wt clean: unexpected arg: $1" >&2
+                        return 1 ;;
+                esac
+            done
+            if [[ -n "$into_name" ]]; then
+                if [[ "$into_name" == "$(basename "$MAIN_REPO")" ]]; then
+                    target_path="$MAIN_REPO"
+                else
+                    target_path="$WT_DIR/$into_name"
+                fi
+                [[ -d "$target_path" ]] || { echo "Error: no worktree at $target_path"; return 1; }
+            else
+                target_path=$(git rev-parse --show-toplevel 2>/dev/null)
+                if [[ -z "$target_path" ]]; then
+                    echo "wt clean: cwd is not inside a git worktree (use --into <name>)" >&2
+                    return 1
+                fi
+            fi
+            local clean_flags="-fd"
+            (( extend_ignored )) && clean_flags="-fdx"
+            local target_branch
+            target_branch=$(__wt_branch "$target_path")
+            echo "clean: $target_path (${target_branch:-detached})"
+            echo "  staged + unstaged (will be discarded by \`git reset --hard HEAD\`):"
+            local tracked
+            tracked=$(git -C "$target_path" status --porcelain | grep -v '^??' | sed 's/^.. //')
+            if [[ -n "$tracked" ]]; then
+                echo "$tracked" | sed 's/^/    /'
+            else
+                echo "    (none)"
+            fi
+            echo "  untracked (will be removed by \`git clean ${clean_flags}\`):"
+            local untracked
+            untracked=$(git -C "$target_path" clean -nd ${clean_flags} 2>/dev/null | sed -n 's/^Would remove //p')
+            if [[ -n "$untracked" ]]; then
+                echo "$untracked" | sed 's/^/    /'
+            else
+                echo "    (none)"
+            fi
+            if [[ -z "$tracked" && -z "$untracked" ]]; then
+                echo "Nothing to clean."
+                return 0
+            fi
+            if (( ! assume_yes )); then
+                local reply
+                printf "Proceed? This is IRREVERSIBLE [y/N] "
+                read -r reply
+                if [[ "$reply" != "y" && "$reply" != "Y" ]]; then
+                    echo "Aborted."
+                    return 1
+                fi
+            fi
+            git -C "$target_path" reset --hard HEAD || return 1
+            git -C "$target_path" clean ${clean_flags} || return 1
+            echo "Done."
+            ;;
+        sync)
+            # Iterate every worktree (main + linked) and run `git sync`. The
+            # global `alias git=hub` higher in this file means `git sync` →
+            # `hub sync`, but aliases only expand at parse time on the line
+            # where the literal word `git` appears as the command. Inside a
+            # subshell we just call `hub sync` directly so we don't rely on
+            # alias-state at function-parse time.
+            case "${1:-}" in
+                -h|--help)
+                    echo "Usage: wt sync"
+                    echo "  Run \`git sync\` (hub sync) in every clean worktree. Dirty worktrees are skipped."
+                    return 0 ;;
+            esac
+            if ! command -v hub >/dev/null 2>&1; then
+                echo "wt sync: hub not on PATH; cannot run \`git sync\`" >&2
+                return 1
+            fi
+            local -a wts
+            local wt_path synced=0 skipped=0
+            while IFS= read -r wt_path; do
+                [[ -z "$wt_path" ]] && continue
+                wts+=("$wt_path")
+            done < <(git -C "$MAIN_REPO" worktree list --porcelain | awk '/^worktree /{print $2}')
+            for wt_path in $wts; do
+                local label
+                if [[ "$wt_path" == "$MAIN_REPO" ]]; then
+                    label="$(basename "$MAIN_REPO") (main)"
+                else
+                    label="${wt_path##*/}"
+                fi
+                if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
+                    echo "[skip] $label — dirty"
+                    skipped=$((skipped + 1))
+                    continue
+                fi
+                echo "[sync] $label"
+                ( cd "$wt_path" && hub sync ) 2>&1 | sed 's/^/  /'
+                synced=$((synced + 1))
+            done
+            echo
+            echo "Done. synced=$synced skipped=$skipped (dirty)"
+            ;;
+        merge)
+            # Merge a ref (local branch, remote branch, tag, or SHA) into the
+            # worktree at cwd (default) or the worktree given by --into.
+            # Refuses to operate on a dirty worktree. Uses `_git_resolve_ref`
+            # for resolution.
+            local target_path="" into_name="" branch=""
+            while (( $# )); do
+                case "$1" in
+                    --into)
+                        into_name="$2"; shift 2 ;;
+                    --into=*)
+                        into_name="${1#--into=}"; shift ;;
+                    -h|--help)
+                        echo "Usage: wt merge <branch> [--into <worktree>]"; return 0 ;;
+                    *)
+                        if [[ -z "$branch" ]]; then
+                            branch="$1"
+                        else
+                            echo "wt merge: unexpected arg: $1" >&2
+                            return 1
+                        fi
+                        shift ;;
+                esac
+            done
+            if [[ -z "$branch" ]]; then
+                echo "Usage: wt merge <branch> [--into <worktree>]"
+                return 1
+            fi
+            if [[ -n "$into_name" ]]; then
+                if [[ "$into_name" == "$(basename "$MAIN_REPO")" ]]; then
+                    target_path="$MAIN_REPO"
+                else
+                    target_path="$WT_DIR/$into_name"
+                fi
+                [[ -d "$target_path" ]] || { echo "Error: no worktree at $target_path"; return 1; }
+            else
+                target_path=$(git rev-parse --show-toplevel 2>/dev/null)
+                if [[ -z "$target_path" ]]; then
+                    echo "wt merge: cwd is not inside a git worktree (use --into <name>)" >&2
+                    return 1
+                fi
+            fi
+            if [[ -n "$(git -C "$target_path" status --porcelain 2>/dev/null)" ]]; then
+                echo "Error: target worktree is dirty: $target_path" >&2
+                return 1
+            fi
+            echo "fetch: origin in $target_path"
+            git -C "$target_path" fetch origin --prune || return 1
+            local source
+            source=$(_git_resolve_ref "$branch" "origin" "$target_path") || return 1
+            local ref
+            case "$source" in
+                local)    ref="$branch" ;;
+                remote:*) ref="refs/remotes/${source#remote:}/$branch" ;;
+                tag)      ref="refs/tags/$branch" ;;
+                sha)      ref="$branch" ;;
+            esac
+            local target_branch
+            target_branch=$(__wt_branch "$target_path")
+            echo "merge: $ref ($source) → $target_path (${target_branch:-detached})"
+            git -C "$target_path" merge "$ref"
+            ;;
         *)
             cat <<'USAGE'
 Usage: wt <command> [args]
@@ -349,8 +695,13 @@ Commands:
   push <worktree> [switch-to]          Current branch → worktree, main → [switch-to] (default: master)
   pull <worktree>                      Worktree branch → main dir, remove worktree
   swap <worktree> [new-worktree-name]  Swap main dir branch ↔ worktree
-  add <worktree> <branch> [remote]     Fetch + add remote branch as a new worktree
+  fork --from <ref> --name <branch> [--into <wt>]
+                                       Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
+  add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
   rm [-f] <worktree>                   Remove worktree (-f to force when dirty)
+  sync                                 Run `git sync` (hub sync) in every clean worktree
+  merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
+  clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
   list                                 List all worktrees
 USAGE
             return 1

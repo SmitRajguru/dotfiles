@@ -245,17 +245,18 @@ claude() {
 }
 
 # -------------------------------------------------------------------
-# wt — Worktree management: push, pull, swap, fork, add, rm, sync, merge, clean
+# wt — Worktree management: push, pull, swap, fork, add, rm, sync, merge, clean, prune
 #   wt push <worktree> [switch-to]          Current branch → worktree, main → [switch-to] (default: master)
 #   wt pull <worktree>                      Worktree branch → main dir, remove worktree
 #   wt swap <worktree> [new-worktree-name]  Swap main dir branch ↔ worktree
 #   wt fork --from <ref> --name <branch> [--into <wt>]
 #                                           Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
 #   wt add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
-#   wt rm [-f] <worktree>                   Remove worktree (-f to force when dirty)
+#   wt rm [-f] <worktree>                   Remove worktree (-f to force when dirty); auto-purges its bazel cache
 #   wt sync                                 Run `git sync` (hub sync) in every clean worktree
 #   wt merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
 #   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
+#   wt prune [-y]                           Remove bazel output_base dirs for worktrees that no longer exist
 #   wt list                                 List all worktrees
 # -------------------------------------------------------------------
 wt() {
@@ -490,6 +491,20 @@ FORKHELP
             else
                 git -C "$MAIN_REPO" worktree remove "$wt_path" || return 1
             fi
+            # Purge any bazel output_base whose recorded workspace path
+            # (DO_NOT_BUILD_HERE) matches the removed worktree.
+            local bazel_root="$HOME/.cache/bazel/_bazel_$USER" ob ob_name ws
+            if [[ -d "$bazel_root" ]]; then
+                for ob in "$bazel_root"/*/(N); do
+                    ob_name=$(basename "$ob")
+                    [[ "$ob_name" =~ ^[0-9a-f]{32}$ ]] || continue
+                    [[ -f "${ob}DO_NOT_BUILD_HERE" ]] || continue
+                    ws=$(<"${ob}DO_NOT_BUILD_HERE")
+                    if [[ "$ws" == "$wt_path" ]]; then
+                        rm -rf "${ob%/}" && echo "  purged bazel cache: ${ob%/}"
+                    fi
+                done
+            fi
             echo "Done."
             ;;
         list|ls)
@@ -582,6 +597,70 @@ CLEANHELP
             git -C "$target_path" reset --hard HEAD || return 1
             git -C "$target_path" clean ${clean_flags} || return 1
             echo "Done."
+            ;;
+        prune)
+            # Scan bazel output_base dirs (~/.cache/bazel/_bazel_$USER/<32-hex>/)
+            # and rm -rf any whose recorded workspace path (DO_NOT_BUILD_HERE)
+            # no longer exists on disk. Dirs without DO_NOT_BUILD_HERE are
+            # spared (workspace path unknown, can't safely decide).
+            local assume_yes=0
+            while (( $# )); do
+                case "$1" in
+                    -y|--yes) assume_yes=1; shift ;;
+                    -h|--help)
+                        cat <<'PRUNEHELP'
+Usage: wt prune [-y]
+  Find bazel output_base dirs under ~/.cache/bazel/_bazel_$USER/ whose
+  recorded workspace path (DO_NOT_BUILD_HERE) no longer exists on disk
+  and rm -rf them. y/N prompt; -y skips. IRREVERSIBLE.
+PRUNEHELP
+                        return 0 ;;
+                    *)
+                        echo "wt prune: unexpected arg: $1" >&2
+                        return 1 ;;
+                esac
+            done
+            local bazel_root="$HOME/.cache/bazel/_bazel_$USER"
+            if [[ ! -d "$bazel_root" ]]; then
+                echo "No bazel cache at $bazel_root"
+                return 0
+            fi
+            local -a orphans orphan_paths
+            local d ob_name ws
+            for d in "$bazel_root"/*/(N); do
+                ob_name=$(basename "$d")
+                [[ "$ob_name" =~ ^[0-9a-f]{32}$ ]] || continue
+                [[ -f "${d}DO_NOT_BUILD_HERE" ]] || continue
+                ws=$(<"${d}DO_NOT_BUILD_HERE")
+                [[ -z "$ws" ]] && continue
+                [[ -d "$ws" ]] && continue
+                orphans+=("${d%/}")
+                orphan_paths+=("$ws")
+            done
+            if (( ${#orphans[@]} == 0 )); then
+                echo "Nothing to prune."
+                return 0
+            fi
+            echo "Orphaned bazel output_base dirs (workspace path missing):"
+            local i ob_size
+            for (( i=1; i<=${#orphans[@]}; i++ )); do
+                ob_size=$(du -sh "${orphans[i]}" 2>/dev/null | awk '{print $1}')
+                printf "  %s  (was: %s, %s)\n" "${orphans[i]}" "${orphan_paths[i]}" "${ob_size:-?}"
+            done
+            if (( ! assume_yes )); then
+                local reply
+                printf "Proceed? rm -rf %d dir(s) [y/N] " "${#orphans[@]}"
+                read -r reply
+                if [[ "$reply" != "y" && "$reply" != "Y" ]]; then
+                    echo "Aborted."
+                    return 1
+                fi
+            fi
+            local ob
+            for ob in "${orphans[@]}"; do
+                rm -rf "$ob" && echo "  removed $ob"
+            done
+            echo "Done. Pruned ${#orphans[@]} dir(s)."
             ;;
         sync)
             # Iterate every worktree (main + linked) and run `git sync`. The
@@ -698,10 +777,11 @@ Commands:
   fork --from <ref> --name <branch> [--into <wt>]
                                        Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
   add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
-  rm [-f] <worktree>                   Remove worktree (-f to force when dirty)
+  rm [-f] <worktree>                   Remove worktree (-f to force when dirty); auto-purges its bazel cache
   sync                                 Run `git sync` (hub sync) in every clean worktree
   merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
   clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
+  prune [-y]                           Remove bazel output_base dirs for worktrees that no longer exist
   list                                 List all worktrees
 USAGE
             return 1

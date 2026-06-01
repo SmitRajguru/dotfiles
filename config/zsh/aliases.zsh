@@ -206,17 +206,19 @@ _ensure_tracking_refspec() {
     print -u2 "Branch '$branch' is not covered by any remote.${remote}.fetch refspec."
     print -u2 "Choose how to make it trackable:"
     print -u2 "  1) Exact:  +refs/heads/$branch:refs/remotes/$remote/$branch"
-    local idx_wildcard=2 idx_broad=3
+    local next_idx=2 idx_specific="" idx_broad="" idx_custom
     if [[ -n "$wildcard_specific" ]]; then
-        print -u2 "  2) Parent: +refs/heads/$wildcard_specific:refs/remotes/$remote/$wildcard_specific"
-        idx_broad=3
-    else
-        idx_wildcard=""
-        idx_broad=2
+        idx_specific=$next_idx
+        print -u2 "  $idx_specific) Parent: +refs/heads/$wildcard_specific:refs/remotes/$remote/$wildcard_specific"
+        next_idx=$((next_idx + 1))
     fi
     if [[ -n "$wildcard_broad" ]]; then
+        idx_broad=$next_idx
         print -u2 "  $idx_broad) Top:    +refs/heads/$wildcard_broad:refs/remotes/$remote/$wildcard_broad"
+        next_idx=$((next_idx + 1))
     fi
+    idx_custom=$next_idx
+    print -u2 "  $idx_custom) Custom: type your own pattern (e.g., develop/mq-* or release/*)"
     print -u2 "  s) Skip (branch won't auto-fetch)"
     local reply
     printf "Choice [1]: " >&2
@@ -225,22 +227,32 @@ _ensure_tracking_refspec() {
     local refspec=""
     case "$reply" in
         1) refspec="+refs/heads/$branch:refs/remotes/$remote/$branch" ;;
-        2)
-            if [[ -n "$wildcard_specific" ]]; then
-                refspec="+refs/heads/$wildcard_specific:refs/remotes/$remote/$wildcard_specific"
-            elif [[ -n "$wildcard_broad" ]]; then
-                refspec="+refs/heads/$wildcard_broad:refs/remotes/$remote/$wildcard_broad"
-            fi
-            ;;
-        3)
-            [[ -n "$wildcard_broad" ]] && refspec="+refs/heads/$wildcard_broad:refs/remotes/$remote/$wildcard_broad"
-            ;;
         s|S)
             print -u2 "Skipped refspec setup."
             return 0 ;;
         *)
-            print -u2 "Unknown choice; skipped."
-            return 0 ;;
+            if [[ "$reply" == "$idx_specific" ]]; then
+                refspec="+refs/heads/$wildcard_specific:refs/remotes/$remote/$wildcard_specific"
+            elif [[ "$reply" == "$idx_broad" ]]; then
+                refspec="+refs/heads/$wildcard_broad:refs/remotes/$remote/$wildcard_broad"
+            elif [[ "$reply" == "$idx_custom" ]]; then
+                local pattern
+                printf "Pattern (will be inserted into +refs/heads/<pattern>:refs/remotes/%s/<pattern>): " "$remote" >&2
+                read -r pattern
+                if [[ -z "$pattern" ]]; then
+                    print -u2 "Empty pattern; skipped."
+                    return 0
+                fi
+                # Sanity check: pattern must match the branch.
+                if [[ "$pattern" != "$branch" && "$pattern" != *'*'* ]]; then
+                    print -u2 "Warning: pattern '$pattern' has no wildcard and isn't '$branch' — it won't cover this branch."
+                fi
+                refspec="+refs/heads/$pattern:refs/remotes/$remote/$pattern"
+            else
+                print -u2 "Unknown choice; skipped."
+                return 0
+            fi
+            ;;
     esac
     if [[ -z "$refspec" ]]; then
         print -u2 "No valid refspec for that choice; skipped."

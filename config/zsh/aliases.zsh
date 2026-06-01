@@ -184,6 +184,75 @@ _git_resolve_ref() {
 }
 
 # -------------------------------------------------------------------
+# _ensure_tracking_refspec — ensure remote.<r>.fetch covers <branch> so
+# `<branch>@{u}` resolves. If not, prompt the user for the refspec
+# pattern to add (exact / parent-dir wildcard / top-level wildcard /
+# skip), persist via `git config --add`, and refetch.
+# Usage: _ensure_tracking_refspec <repo-path> <remote> <branch>
+# -------------------------------------------------------------------
+_ensure_tracking_refspec() {
+    local repo="$1" remote="$2" branch="$3"
+    if git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name "${branch}@{u}" >/dev/null 2>&1; then
+        return 0
+    fi
+    local wildcard_specific="" wildcard_broad=""
+    if [[ "$branch" == */* ]]; then
+        wildcard_broad="${branch%%/*}/*"
+        # Specific: drop only the last segment (e.g., develop/mq-zr10.1 → develop/*)
+        wildcard_specific="${branch%/*}/*"
+        # If branch has only one slash, specific == broad
+        [[ "$wildcard_specific" == "$wildcard_broad" ]] && wildcard_specific=""
+    fi
+    print -u2 "Branch '$branch' is not covered by any remote.${remote}.fetch refspec."
+    print -u2 "Choose how to make it trackable:"
+    print -u2 "  1) Exact:  +refs/heads/$branch:refs/remotes/$remote/$branch"
+    local idx_wildcard=2 idx_broad=3
+    if [[ -n "$wildcard_specific" ]]; then
+        print -u2 "  2) Parent: +refs/heads/$wildcard_specific:refs/remotes/$remote/$wildcard_specific"
+        idx_broad=3
+    else
+        idx_wildcard=""
+        idx_broad=2
+    fi
+    if [[ -n "$wildcard_broad" ]]; then
+        print -u2 "  $idx_broad) Top:    +refs/heads/$wildcard_broad:refs/remotes/$remote/$wildcard_broad"
+    fi
+    print -u2 "  s) Skip (branch won't auto-fetch)"
+    local reply
+    printf "Choice [1]: " >&2
+    read -r reply
+    reply="${reply:-1}"
+    local refspec=""
+    case "$reply" in
+        1) refspec="+refs/heads/$branch:refs/remotes/$remote/$branch" ;;
+        2)
+            if [[ -n "$wildcard_specific" ]]; then
+                refspec="+refs/heads/$wildcard_specific:refs/remotes/$remote/$wildcard_specific"
+            elif [[ -n "$wildcard_broad" ]]; then
+                refspec="+refs/heads/$wildcard_broad:refs/remotes/$remote/$wildcard_broad"
+            fi
+            ;;
+        3)
+            [[ -n "$wildcard_broad" ]] && refspec="+refs/heads/$wildcard_broad:refs/remotes/$remote/$wildcard_broad"
+            ;;
+        s|S)
+            print -u2 "Skipped refspec setup."
+            return 0 ;;
+        *)
+            print -u2 "Unknown choice; skipped."
+            return 0 ;;
+    esac
+    if [[ -z "$refspec" ]]; then
+        print -u2 "No valid refspec for that choice; skipped."
+        return 0
+    fi
+    git -C "$repo" config --add "remote.${remote}.fetch" "$refspec"
+    print -u2 "Added refspec to remote.${remote}.fetch: $refspec"
+    # Fetch via the new refspec so refs/remotes/${remote}/* is populated.
+    git -C "$repo" fetch "$remote" >/dev/null 2>&1 || true
+}
+
+# -------------------------------------------------------------------
 # git-checkout-ref — checkout a ref, fetching from remote if needed.
 # Branches: sets up tracking when the branch only exists on the remote.
 # Tags/SHAs: detached HEAD.
@@ -211,11 +280,13 @@ git-checkout-ref() {
             # works even when remote.<remote>.fetch refspecs don't map this
             # branch (--track validates against refspecs and rejects unmatched
             # upstreams with "starting point ... is not a branch"). Then set
-            # tracking via config directly.
+            # tracking via config directly, and ensure a fetch refspec covers
+            # the branch so `<branch>@{u}` resolves on future operations.
             local r="${source#remote:}"
             git checkout --no-track -b "$ref" "refs/remotes/${r}/${ref}" || return 1
             git config "branch.${ref}.remote" "$r"
             git config "branch.${ref}.merge" "refs/heads/${ref}"
+            _ensure_tracking_refspec "." "$r" "$ref"
             ;;
         tag)
             git checkout --detach "refs/tags/${ref}"
@@ -456,11 +527,14 @@ FORKHELP
                 remote:*)
                     # Use the explicit refs/remotes/... path as start-point so the worktree add
                     # works even when remote.<remote>.fetch refspecs don't map this branch.
-                    # Then set tracking via config (--track / --set-upstream-to also check refspecs).
+                    # Then set tracking via config (--track / --set-upstream-to also check refspecs)
+                    # and ensure a permanent fetch refspec covers the branch so `<branch>@{u}`
+                    # resolves on future operations.
                     local r="${source#remote:}"
                     git -C "$MAIN_REPO" worktree add --no-track -b "$ref" "$wt_path" "refs/remotes/${r}/${ref}" || return 1
                     git -C "$MAIN_REPO" config "branch.${ref}.remote" "$r"
                     git -C "$MAIN_REPO" config "branch.${ref}.merge" "refs/heads/${ref}"
+                    _ensure_tracking_refspec "$MAIN_REPO" "$r" "$ref"
                     ;;
                 tag)
                     git -C "$MAIN_REPO" worktree add --detach "$wt_path" "refs/tags/${ref}" || return 1

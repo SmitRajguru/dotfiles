@@ -192,6 +192,11 @@ _git_resolve_ref() {
 # -------------------------------------------------------------------
 _ensure_tracking_refspec() {
     local repo="$1" remote="$2" branch="$3"
+    # Skip if the branch has no tracking intent (no branch.<n>.merge config).
+    # Purely local branches shouldn't trigger a refspec prompt.
+    local merge_config
+    merge_config=$(git -C "$repo" config --get "branch.${branch}.merge" 2>/dev/null)
+    [[ -z "$merge_config" ]] && return 0
     if git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name "${branch}@{u}" >/dev/null 2>&1; then
         return 0
     fi
@@ -286,6 +291,7 @@ git-checkout-ref() {
     case "$source" in
         local)
             git checkout "$ref"
+            _ensure_tracking_refspec "." "$remote" "$ref"
             ;;
         remote:*)
             # Use the explicit refs/remotes/... path as start-point so checkout
@@ -535,6 +541,7 @@ FORKHELP
             case "$source" in
                 local)
                     git -C "$MAIN_REPO" worktree add "$wt_path" "$ref" || return 1
+                    _ensure_tracking_refspec "$MAIN_REPO" "$remote" "$ref"
                     ;;
                 remote:*)
                     # Use the explicit refs/remotes/... path as start-point so the worktree add

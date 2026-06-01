@@ -270,6 +270,30 @@ _ensure_tracking_refspec() {
 }
 
 # -------------------------------------------------------------------
+# _refspecs_covering_branch — list remote.<r>.fetch refspecs whose
+# left-side ref pattern matches <branch>. Output: one line per match,
+# format `<remote>|<refspec>`.
+# Usage: _refspecs_covering_branch <repo-path> <branch>
+# -------------------------------------------------------------------
+_refspecs_covering_branch() {
+    local repo="$1" branch="$2"
+    local remote refspec rs lhs pattern
+    while IFS= read -r remote; do
+        [[ -z "$remote" ]] && continue
+        while IFS= read -r refspec; do
+            [[ -z "$refspec" ]] && continue
+            rs="${refspec#+}"
+            lhs="${rs%%:*}"
+            pattern="${lhs#refs/heads/}"
+            # zsh glob match: ${~pattern} enables * as glob in pattern position.
+            if [[ "$branch" == ${~pattern} ]]; then
+                printf '%s|%s\n' "$remote" "$refspec"
+            fi
+        done < <(git -C "$repo" config --get-all "remote.${remote}.fetch" 2>/dev/null)
+    done < <(git -C "$repo" remote 2>/dev/null)
+}
+
+# -------------------------------------------------------------------
 # git-checkout-ref — checkout a ref, fetching from remote if needed.
 # Branches: sets up tracking when the branch only exists on the remote.
 # Tags/SHAs: detached HEAD.
@@ -583,6 +607,53 @@ FORKHELP
                 git -C "$MAIN_REPO" worktree remove --force "$wt_path" || return 1
             else
                 git -C "$MAIN_REPO" worktree remove "$wt_path" || return 1
+            fi
+            # Offer to remove fetch refspecs that were covering the removed
+            # worktree's branch. Useful when an exact per-branch refspec was
+            # added by `_ensure_tracking_refspec` and is no longer needed.
+            # Wildcard refspecs covering many branches are listed too — the
+            # user picks which (if any) to remove.
+            if [[ -n "$target_branch" ]]; then
+                local -a matching
+                while IFS= read -r line; do
+                    [[ -n "$line" ]] && matching+=("$line")
+                done < <(_refspecs_covering_branch "$MAIN_REPO" "$target_branch")
+                if (( ${#matching[@]} > 0 )); then
+                    print -u2 "Fetch refspecs currently covering '$target_branch':"
+                    local i remote refspec
+                    for (( i=1; i<=${#matching[@]}; i++ )); do
+                        remote="${matching[i]%%|*}"
+                        refspec="${matching[i]#*|}"
+                        print -u2 "  $i) [$remote] $refspec"
+                    done
+                    local reply
+                    printf "Remove which? [comma-separated indices / all / Enter=skip]: " >&2
+                    read -r reply
+                    if [[ -n "$reply" && "$reply" != $'\n' ]]; then
+                        local -a indices
+                        if [[ "$reply" == "all" || "$reply" == "ALL" ]]; then
+                            for (( i=1; i<=${#matching[@]}; i++ )); do indices+=("$i"); done
+                        else
+                            indices=("${(@s:,:)reply}")
+                        fi
+                        local idx
+                        for idx in "${indices[@]}"; do
+                            idx="${idx// /}"
+                            [[ -z "$idx" ]] && continue
+                            if [[ ! "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#matching[@]} )); then
+                                print -u2 "  invalid index: $idx"
+                                continue
+                            fi
+                            remote="${matching[idx]%%|*}"
+                            refspec="${matching[idx]#*|}"
+                            if git -C "$MAIN_REPO" config --unset-all --fixed-value "remote.${remote}.fetch" "$refspec"; then
+                                print -u2 "  removed: [$remote] $refspec"
+                            else
+                                print -u2 "  failed to remove: [$remote] $refspec" >&2
+                            fi
+                        done
+                    fi
+                fi
             fi
             # Purge any bazel output_base whose recorded workspace path
             # (DO_NOT_BUILD_HERE) matches the removed worktree. chmod -R u+w

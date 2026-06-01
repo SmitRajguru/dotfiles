@@ -1,11 +1,5 @@
 
 # general
-# Note: `alias git=hub` is set at the END of this file, after all function
-# definitions. Aliases expand at parse time on the literal `git` word, so
-# putting it up here would silently turn every `git` inside our functions
-# into `hub`, which breaks `hub fetch` on remotes hub doesn't recognize
-# as GitHub. Putting it at the end keeps the interactive alias while
-# leaving function bodies on the real git binary.
 alias p10k-wizard='p10k configure'
 export HISTTIMEFORMAT="%d/%m/%y %T "
 export PATH=/home/srajguru/.local/bin:$PATH
@@ -1357,11 +1351,5 @@ elif [ -n "$BASH_VERSION" ]; then
     complete -F _tmux_session_completion tmux-reset
 
 fi
-
-# `git` → `hub` for interactive use only. Must stay AFTER every function
-# definition: aliases expand at parse time on the literal word, so this
-# placement leaves all `git` calls inside our functions on the real
-# binary. See note at the top of this file.
-alias git=hub
 
 # Note: additional aliases can drop into $ZDOTDIR/local/*.zsh and will be auto-sourced.

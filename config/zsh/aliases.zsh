@@ -1,6 +1,11 @@
 
 # general
-alias git=hub
+# Note: `alias git=hub` is set at the END of this file, after all function
+# definitions. Aliases expand at parse time on the literal `git` word, so
+# putting it up here would silently turn every `git` inside our functions
+# into `hub`, which breaks `hub fetch` on remotes hub doesn't recognize
+# as GitHub. Putting it at the end keeps the interactive alias while
+# leaving function bodies on the real git binary.
 alias p10k-wizard='p10k configure'
 export HISTTIMEFORMAT="%d/%m/%y %T "
 export PATH=/home/srajguru/.local/bin:$PATH
@@ -208,22 +213,26 @@ _ensure_tracking_refspec() {
         # If branch has only one slash, specific == broad
         [[ "$wildcard_specific" == "$wildcard_broad" ]] && wildcard_specific=""
     fi
-    print -u2 "Branch '$branch' is not covered by any remote.${remote}.fetch refspec."
+    # Note: brace every $var that's immediately followed by `:` — zsh
+    # treats `$var:r` / `:t` / `:h` / `:e` / `:l` / `:u` as csh-style
+    # modifiers, silently stripping characters. The braces make the
+    # `:` a literal separator.
+    print -u2 "Branch '${branch}' is not covered by any remote.${remote}.fetch refspec."
     print -u2 "Choose how to make it trackable:"
-    print -u2 "  1) Exact:  +refs/heads/$branch:refs/remotes/$remote/$branch"
+    print -u2 "  1) Exact:  +refs/heads/${branch}:refs/remotes/${remote}/${branch}"
     local next_idx=2 idx_specific="" idx_broad="" idx_custom
     if [[ -n "$wildcard_specific" ]]; then
         idx_specific=$next_idx
-        print -u2 "  $idx_specific) Parent: +refs/heads/$wildcard_specific:refs/remotes/$remote/$wildcard_specific"
+        print -u2 "  ${idx_specific}) Parent: +refs/heads/${wildcard_specific}:refs/remotes/${remote}/${wildcard_specific}"
         next_idx=$((next_idx + 1))
     fi
     if [[ -n "$wildcard_broad" ]]; then
         idx_broad=$next_idx
-        print -u2 "  $idx_broad) Top:    +refs/heads/$wildcard_broad:refs/remotes/$remote/$wildcard_broad"
+        print -u2 "  ${idx_broad}) Top:    +refs/heads/${wildcard_broad}:refs/remotes/${remote}/${wildcard_broad}"
         next_idx=$((next_idx + 1))
     fi
     idx_custom=$next_idx
-    print -u2 "  $idx_custom) Custom: type your own pattern (e.g., develop/mq-* or release/*)"
+    print -u2 "  ${idx_custom}) Custom: type your own pattern (e.g., develop/mq-* or release/*)"
     print -u2 "  s) Skip (branch won't auto-fetch)"
     local reply
     printf "Choice [1]: " >&2
@@ -231,15 +240,15 @@ _ensure_tracking_refspec() {
     reply="${reply:-1}"
     local refspec=""
     case "$reply" in
-        1) refspec="+refs/heads/$branch:refs/remotes/$remote/$branch" ;;
+        1) refspec="+refs/heads/${branch}:refs/remotes/${remote}/${branch}" ;;
         s|S)
             print -u2 "Skipped refspec setup."
             return 0 ;;
         *)
             if [[ "$reply" == "$idx_specific" ]]; then
-                refspec="+refs/heads/$wildcard_specific:refs/remotes/$remote/$wildcard_specific"
+                refspec="+refs/heads/${wildcard_specific}:refs/remotes/${remote}/${wildcard_specific}"
             elif [[ "$reply" == "$idx_broad" ]]; then
-                refspec="+refs/heads/$wildcard_broad:refs/remotes/$remote/$wildcard_broad"
+                refspec="+refs/heads/${wildcard_broad}:refs/remotes/${remote}/${wildcard_broad}"
             elif [[ "$reply" == "$idx_custom" ]]; then
                 local pattern
                 printf "Pattern (will be inserted into +refs/heads/<pattern>:refs/remotes/%s/<pattern>): " "$remote" >&2
@@ -250,9 +259,9 @@ _ensure_tracking_refspec() {
                 fi
                 # Sanity check: pattern must match the branch.
                 if [[ "$pattern" != "$branch" && "$pattern" != *'*'* ]]; then
-                    print -u2 "Warning: pattern '$pattern' has no wildcard and isn't '$branch' — it won't cover this branch."
+                    print -u2 "Warning: pattern '${pattern}' has no wildcard and isn't '${branch}' — it won't cover this branch."
                 fi
-                refspec="+refs/heads/$pattern:refs/remotes/$remote/$pattern"
+                refspec="+refs/heads/${pattern}:refs/remotes/${remote}/${pattern}"
             else
                 print -u2 "Unknown choice; skipped."
                 return 0
@@ -867,7 +876,16 @@ SYNCHELP
                     return 0 ;;
             esac
             echo "[fetch] $MAIN_REPO: git fetch origin --prune"
-            git -C "$MAIN_REPO" fetch origin --prune 2>&1 | sed 's/^/  /' || return 1
+            # Capture output then print, so sed doesn't mask the fetch's exit
+            # status (a `git | sed` pipeline yields sed's status).
+            local fetch_output fetch_rc
+            fetch_output=$(git -C "$MAIN_REPO" fetch origin --prune 2>&1)
+            fetch_rc=$?
+            [[ -n "$fetch_output" ]] && echo "$fetch_output" | sed 's/^/  /'
+            if (( fetch_rc != 0 )); then
+                echo "[fetch] failed (rc=$fetch_rc); aborting wt sync" >&2
+                return 1
+            fi
             local -a wts
             local wt_path
             local synced=0 uptodate=0 ahead=0 diverged=0 no_upstream=0 detached=0 dirty=0
@@ -1339,5 +1357,11 @@ elif [ -n "$BASH_VERSION" ]; then
     complete -F _tmux_session_completion tmux-reset
 
 fi
+
+# `git` → `hub` for interactive use only. Must stay AFTER every function
+# definition: aliases expand at parse time on the literal word, so this
+# placement leaves all `git` calls inside our functions on the real
+# binary. See note at the top of this file.
+alias git=hub
 
 # Note: additional aliases can drop into $ZDOTDIR/local/*.zsh and will be auto-sourced.

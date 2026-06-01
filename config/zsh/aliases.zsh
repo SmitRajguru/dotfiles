@@ -253,7 +253,7 @@ claude() {
 #                                           Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
 #   wt add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
 #   wt rm [-f] <worktree>                   Remove worktree (-f to force when dirty); auto-purges its bazel cache
-#   wt sync                                 Run `git sync` (hub sync) in every clean worktree
+#   wt sync                                 Fetch origin once, fast-forward each worktree's branch to its upstream
 #   wt merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
 #   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
 #   wt prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
@@ -686,24 +686,27 @@ PRUNEHELP
             (( failed )) && return 1
             ;;
         sync)
-            # Iterate every worktree (main + linked) and run `git sync`. The
-            # global `alias git=hub` higher in this file means `git sync` →
-            # `hub sync`, but aliases only expand at parse time on the line
-            # where the literal word `git` appears as the command. Inside a
-            # subshell we just call `hub sync` directly so we don't rely on
-            # alias-state at function-parse time.
+            # Fetch from origin once (refs/remotes/origin/* is shared across
+            # all worktrees via the main repo's .git dir), then fast-forward
+            # each worktree's checked-out branch to its upstream. Classifies
+            # each wt as up-to-date / ff / ahead / diverged / no-upstream /
+            # detached / dirty. Refuses ff on dirty wts.
             case "${1:-}" in
                 -h|--help)
-                    echo "Usage: wt sync"
-                    echo "  Run \`git sync\` (hub sync) in every clean worktree. Dirty worktrees are skipped."
+                    cat <<'SYNCHELP'
+Usage: wt sync
+  Single `git fetch origin --prune` from the main repo (shared refs),
+  then per-worktree `git merge --ff-only @{u}` on the checked-out
+  branch. Skips dirty / detached / upstream-less worktrees. Logs
+  diverged or ahead branches without modifying them.
+SYNCHELP
                     return 0 ;;
             esac
-            if ! command -v hub >/dev/null 2>&1; then
-                echo "wt sync: hub not on PATH; cannot run \`git sync\`" >&2
-                return 1
-            fi
+            echo "[fetch] $MAIN_REPO: git fetch origin --prune"
+            git -C "$MAIN_REPO" fetch origin --prune 2>&1 | sed 's/^/  /' || return 1
             local -a wts
-            local wt_path synced=0 skipped=0
+            local wt_path
+            local synced=0 uptodate=0 ahead=0 diverged=0 no_upstream=0 detached=0 dirty=0
             while IFS= read -r wt_path; do
                 [[ -z "$wt_path" ]] && continue
                 wts+=("$wt_path")
@@ -716,16 +719,44 @@ PRUNEHELP
                     label="${wt_path##*/}"
                 fi
                 if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
-                    echo "[skip] $label — dirty"
-                    skipped=$((skipped + 1))
+                    echo "[dirty] $label"
+                    dirty=$((dirty + 1))
                     continue
                 fi
-                echo "[sync] $label"
-                ( cd "$wt_path" && hub sync ) 2>&1 | sed 's/^/  /'
-                synced=$((synced + 1))
+                local branch
+                branch=$(__wt_branch "$wt_path")
+                if [[ -z "$branch" ]]; then
+                    echo "[detached] $label"
+                    detached=$((detached + 1))
+                    continue
+                fi
+                local upstream
+                upstream=$(git -C "$wt_path" rev-parse --abbrev-ref --symbolic-full-name "${branch}@{u}" 2>/dev/null)
+                if [[ -z "$upstream" ]]; then
+                    echo "[no-upstream] $label ($branch)"
+                    no_upstream=$((no_upstream + 1))
+                    continue
+                fi
+                local local_sha remote_sha
+                local_sha=$(git -C "$wt_path" rev-parse HEAD)
+                remote_sha=$(git -C "$wt_path" rev-parse "$upstream")
+                if [[ "$local_sha" == "$remote_sha" ]]; then
+                    echo "[up-to-date] $label ($branch @ $upstream)"
+                    uptodate=$((uptodate + 1))
+                elif git -C "$wt_path" merge-base --is-ancestor "$local_sha" "$remote_sha"; then
+                    echo "[ff] $label ($branch → $upstream)"
+                    git -C "$wt_path" merge --ff-only "$upstream" 2>&1 | sed 's/^/  /' || return 1
+                    synced=$((synced + 1))
+                elif git -C "$wt_path" merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+                    echo "[ahead] $label ($branch ahead of $upstream, unpushed commits)"
+                    ahead=$((ahead + 1))
+                else
+                    echo "[diverged] $label ($branch diverged from $upstream)"
+                    diverged=$((diverged + 1))
+                fi
             done
             echo
-            echo "Done. synced=$synced skipped=$skipped (dirty)"
+            echo "Done. ff=$synced up-to-date=$uptodate ahead=$ahead diverged=$diverged no-upstream=$no_upstream detached=$detached dirty=$dirty"
             ;;
         merge)
             # Merge a ref (local branch, remote branch, tag, or SHA) into the
@@ -801,7 +832,7 @@ Commands:
                                        Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
   add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
   rm [-f] <worktree>                   Remove worktree (-f to force when dirty); auto-purges its bazel cache
-  sync                                 Run `git sync` (hub sync) in every clean worktree
+  sync                                 Fetch origin once, fast-forward each worktree's branch to its upstream
   merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
   clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
   prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist

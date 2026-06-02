@@ -273,6 +273,27 @@ _ensure_tracking_refspec() {
 }
 
 # -------------------------------------------------------------------
+# _print_trimmed — print first $1 + last $2 lines of stdin, with a
+# `... (N more lines) ...` marker between if total > $1+$2. Each line
+# (including the marker) is prefixed with $3.
+# Usage: <cmd> | _print_trimmed <head> <tail> <indent>
+# -------------------------------------------------------------------
+_print_trimmed() {
+    local head_count="$1" tail_count="$2" indent="$3"
+    awk -v head="$head_count" -v tail="$tail_count" -v indent="$indent" '
+      { lines[NR] = $0 }
+      END {
+        if (NR <= head + tail) {
+          for (i = 1; i <= NR; i++) print indent lines[i]
+        } else {
+          for (i = 1; i <= head; i++) print indent lines[i]
+          printf "%s... (%d more lines) ...\n", indent, NR - head - tail
+          for (i = NR - tail + 1; i <= NR; i++) print indent lines[i]
+        }
+      }'
+}
+
+# -------------------------------------------------------------------
 # _refspecs_covering_branch — list remote.<r>.fetch refspecs whose
 # left-side ref pattern matches <branch>. Output: one line per match,
 # format `<remote>|<refspec>`.
@@ -869,17 +890,25 @@ Usage: wt sync
 SYNCHELP
                     return 0 ;;
             esac
+            # Output is laid out in three indent levels for readability:
+            #   L0 (0 spaces): phase markers (`[fetch]`, summary line)
+            #   L2 (2 spaces): per-worktree status (`  [ff] label ...`)
+            #   L4 (4 spaces): nested command output (fetch detail, merge output)
+            # Verbose subcommand output is trimmed via `_print_trimmed` to
+            # keep `git merge --ff-only` checkout walls from drowning the
+            # per-wt signal.
             echo "[fetch] $MAIN_REPO: git fetch origin --prune"
             # Capture output then print, so sed doesn't mask the fetch's exit
             # status (a `git | sed` pipeline yields sed's status).
             local fetch_output fetch_rc
             fetch_output=$(git -C "$MAIN_REPO" fetch origin --prune 2>&1)
             fetch_rc=$?
-            [[ -n "$fetch_output" ]] && echo "$fetch_output" | sed 's/^/  /'
+            [[ -n "$fetch_output" ]] && printf '%s\n' "$fetch_output" | _print_trimmed 3 3 "    "
             if (( fetch_rc != 0 )); then
                 echo "[fetch] failed (rc=$fetch_rc); aborting wt sync" >&2
                 return 1
             fi
+            echo "[worktrees]"
             local -a wts
             local wt_path
             local synced=0 uptodate=0 ahead=0 diverged=0 no_upstream=0 detached=0 dirty=0
@@ -895,21 +924,21 @@ SYNCHELP
                     label="${wt_path##*/}"
                 fi
                 if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
-                    echo "[dirty] $label"
+                    echo "  [dirty] $label"
                     dirty=$((dirty + 1))
                     continue
                 fi
                 local branch
                 branch=$(__wt_branch "$wt_path")
                 if [[ -z "$branch" ]]; then
-                    echo "[detached] $label"
+                    echo "  [detached] $label"
                     detached=$((detached + 1))
                     continue
                 fi
                 local upstream
                 upstream=$(git -C "$wt_path" rev-parse --abbrev-ref --symbolic-full-name "${branch}@{u}" 2>/dev/null)
                 if [[ -z "$upstream" ]]; then
-                    echo "[no-upstream] $label ($branch)"
+                    echo "  [no-upstream] $label ($branch)"
                     no_upstream=$((no_upstream + 1))
                     continue
                 fi
@@ -917,17 +946,24 @@ SYNCHELP
                 local_sha=$(git -C "$wt_path" rev-parse HEAD)
                 remote_sha=$(git -C "$wt_path" rev-parse "$upstream")
                 if [[ "$local_sha" == "$remote_sha" ]]; then
-                    echo "[up-to-date] $label ($branch @ $upstream)"
+                    echo "  [up-to-date] $label ($branch @ $upstream)"
                     uptodate=$((uptodate + 1))
                 elif git -C "$wt_path" merge-base --is-ancestor "$local_sha" "$remote_sha"; then
-                    echo "[ff] $label ($branch → $upstream)"
-                    git -C "$wt_path" merge --ff-only "$upstream" 2>&1 | sed 's/^/  /' || return 1
+                    echo "  [ff] $label ($branch → $upstream)"
+                    local merge_output merge_rc
+                    merge_output=$(git -C "$wt_path" merge --ff-only "$upstream" 2>&1)
+                    merge_rc=$?
+                    [[ -n "$merge_output" ]] && printf '%s\n' "$merge_output" | _print_trimmed 3 3 "    "
+                    if (( merge_rc != 0 )); then
+                        echo "  [ff] failed (rc=$merge_rc); aborting wt sync" >&2
+                        return 1
+                    fi
                     synced=$((synced + 1))
                 elif git -C "$wt_path" merge-base --is-ancestor "$remote_sha" "$local_sha"; then
-                    echo "[ahead] $label ($branch ahead of $upstream, unpushed commits)"
+                    echo "  [ahead] $label ($branch ahead of $upstream, unpushed commits)"
                     ahead=$((ahead + 1))
                 else
-                    echo "[diverged] $label ($branch diverged from $upstream)"
+                    echo "  [diverged] $label ($branch diverged from $upstream)"
                     diverged=$((diverged + 1))
                 fi
             done

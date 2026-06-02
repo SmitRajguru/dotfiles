@@ -59,5 +59,6 @@
   "alwaysThinkingEnabled": true,
   "skipDangerousModePermissionPrompt": true,
   "teammateMode": "in-process",
-  "skipAutoPermissionPrompt": true
+  "skipAutoPermissionPrompt": true,
+  "skipWorkflowUsageWarning": true
 }

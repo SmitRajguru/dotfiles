@@ -397,6 +397,11 @@ claude() {
 #   wt list                                 List all worktrees
 # -------------------------------------------------------------------
 wt() {
+    # Defensive: shield the function body from a caller-side `setopt
+    # XTRACE`/`VERBOSE` (or `set -x`). Without LOCAL_OPTIONS, any trace
+    # state in the surrounding shell leaks in and prints every variable
+    # assignment in here (including multi-kilobyte merge outputs).
+    setopt local_options no_xtrace no_verbose
     local WT_DIR="$HOME/worktrees"
     local MAIN_REPO="${MAIN_REPO:-$HOME}"
     if ! git -C "$MAIN_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -911,7 +916,9 @@ SYNCHELP
             echo "[worktrees]"
             local -a wts
             local wt_path
-            local synced=0 uptodate=0 ahead=0 diverged=0 no_upstream=0 detached=0 dirty=0
+            # Per-category lists for the grouped summary at the end.
+            local -a ff_list uptodate_list ahead_list diverged_list \
+                     no_upstream_list detached_list dirty_list
             while IFS= read -r wt_path; do
                 [[ -z "$wt_path" ]] && continue
                 wts+=("$wt_path")
@@ -926,21 +933,21 @@ SYNCHELP
                 echo "  ===== $label ====="
                 if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
                     echo "  [dirty]"
-                    dirty=$((dirty + 1))
+                    dirty_list+=("$label")
                     continue
                 fi
                 local branch
                 branch=$(__wt_branch "$wt_path")
                 if [[ -z "$branch" ]]; then
                     echo "  [detached]"
-                    detached=$((detached + 1))
+                    detached_list+=("$label")
                     continue
                 fi
                 local upstream
                 upstream=$(git -C "$wt_path" rev-parse --abbrev-ref --symbolic-full-name "${branch}@{u}" 2>/dev/null)
                 if [[ -z "$upstream" ]]; then
                     echo "  [no-upstream] $branch"
-                    no_upstream=$((no_upstream + 1))
+                    no_upstream_list+=("$label ($branch)")
                     continue
                 fi
                 local local_sha remote_sha
@@ -948,7 +955,7 @@ SYNCHELP
                 remote_sha=$(git -C "$wt_path" rev-parse "$upstream")
                 if [[ "$local_sha" == "$remote_sha" ]]; then
                     echo "  [up-to-date] $branch @ $upstream"
-                    uptodate=$((uptodate + 1))
+                    uptodate_list+=("$label ($branch)")
                 elif git -C "$wt_path" merge-base --is-ancestor "$local_sha" "$remote_sha"; then
                     echo "  [ff] $branch → $upstream"
                     local merge_output merge_rc
@@ -959,17 +966,39 @@ SYNCHELP
                         echo "  [ff] failed (rc=$merge_rc); aborting wt sync" >&2
                         return 1
                     fi
-                    synced=$((synced + 1))
+                    ff_list+=("$label ($branch)")
                 elif git -C "$wt_path" merge-base --is-ancestor "$remote_sha" "$local_sha"; then
                     echo "  [ahead] $branch ahead of $upstream (unpushed commits)"
-                    ahead=$((ahead + 1))
+                    ahead_list+=("$label ($branch)")
                 else
                     echo "  [diverged] $branch diverged from $upstream"
-                    diverged=$((diverged + 1))
+                    diverged_list+=("$label ($branch)")
                 fi
             done
             echo
-            echo "Done. ff=$synced up-to-date=$uptodate ahead=$ahead diverged=$diverged no-upstream=$no_upstream detached=$detached dirty=$dirty"
+            echo "Done."
+            # Grouped summary: one block per non-empty category. Categories
+            # with zero members are omitted entirely so the summary scales
+            # with what actually happened.
+            local _summary_indent="             > "
+            _wt_sync_summary_block() {
+                local title="$1"; shift
+                (( $# == 0 )) && return
+                echo
+                echo "***** ${title}=$#"
+                local item
+                for item in "$@"; do
+                    echo "${_summary_indent}${item}"
+                done
+            }
+            _wt_sync_summary_block "ff"           "${ff_list[@]}"
+            _wt_sync_summary_block "up-to-date"   "${uptodate_list[@]}"
+            _wt_sync_summary_block "ahead"        "${ahead_list[@]}"
+            _wt_sync_summary_block "diverged"     "${diverged_list[@]}"
+            _wt_sync_summary_block "no-upstream"  "${no_upstream_list[@]}"
+            _wt_sync_summary_block "detached"     "${detached_list[@]}"
+            _wt_sync_summary_block "dirty"        "${dirty_list[@]}"
+            unset -f _wt_sync_summary_block
             ;;
         merge)
             # Merge a ref (local branch, remote branch, tag, or SHA) into the

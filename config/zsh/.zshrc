@@ -79,8 +79,12 @@ ZSH_THEME="robbyrussell"
 # Add wisely, as too many plugins slow down shell startup.
 plugins=(git zsh-syntax-highlighting zsh-autosuggestions fzf)
 
-# Catppuccin macchiato colors for zsh-syntax-highlighting (must be before OMZ sources the plugin)
-source ${ZDOTDIR:-$HOME}/catppuccin_macchiato-zsh-syntax-highlighting.zsh
+# Catppuccin flavor for zsh-syntax-highlighting (must be before OMZ
+# sources the plugin). The same env var is picked up by aliases.zsh to
+# keep our `_CT_*` semantic palette in lockstep with the syntax-
+# highlighting theme. Swap at runtime via `catppuccin-<flavor>` aliases.
+export CATPPUCCIN_FLAVOR=macchiato
+source ${ZDOTDIR:-$HOME}/catppuccin_${CATPPUCCIN_FLAVOR}-zsh-syntax-highlighting.zsh
 
 source $ZSH/oh-my-zsh.sh
 

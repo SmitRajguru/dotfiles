@@ -62,23 +62,25 @@ elif [ -n "$ZSH_VERSION" ]; then
     [[ "$pane_ver" == "$ver" ]] && return 0
     # Mark as served and execute
     tmux set-option -p @deferred_version "$ver" 2>/dev/null
-    echo "\n\n\n**** deferred send-all command ****"
-    echo "> $cmd\n"
+    echo "\n\n\n${_CT_PHASE}**** deferred send-all command ****${_CT_RESET}"
+    echo "${_CT_INFO}>${_CT_RESET} ${_CT_PATH}$cmd${_CT_RESET}\n"
     eval "$cmd" 2>/dev/null
   }
   precmd_functions=(${precmd_functions:#_check_deferred_cmd} _check_deferred_cmd)
 else
-  echo "Unknown shell type"
+  echo "${_CT_BAD}Unknown shell type${_CT_RESET}"
 fi
 
 # fzf in tmux popup
 export FZF_DEFAULT_OPTS='--tmux center,50%,40%'
 
-# Catppuccin syntax highlighting flavor switchers
-alias catppuccin-latte='source ${ZDOTDIR:-$HOME}/catppuccin_latte-zsh-syntax-highlighting.zsh'
-alias catppuccin-frappe='source ${ZDOTDIR:-$HOME}/catppuccin_frappe-zsh-syntax-highlighting.zsh'
-alias catppuccin-macchiato='source ${ZDOTDIR:-$HOME}/catppuccin_macchiato-zsh-syntax-highlighting.zsh'
-alias catppuccin-mocha='source ${ZDOTDIR:-$HOME}/catppuccin_mocha-zsh-syntax-highlighting.zsh'
+# Catppuccin flavor switchers — change both the zsh-syntax-highlighting
+# colors AND our own aliases.zsh palette (`_CT_*`, used by wt and friends)
+# in lockstep, so a `catppuccin-mocha` invocation retints everything.
+alias catppuccin-latte='source ${ZDOTDIR:-$HOME}/catppuccin_latte-zsh-syntax-highlighting.zsh && _ct_init latte'
+alias catppuccin-frappe='source ${ZDOTDIR:-$HOME}/catppuccin_frappe-zsh-syntax-highlighting.zsh && _ct_init frappe'
+alias catppuccin-macchiato='source ${ZDOTDIR:-$HOME}/catppuccin_macchiato-zsh-syntax-highlighting.zsh && _ct_init macchiato'
+alias catppuccin-mocha='source ${ZDOTDIR:-$HOME}/catppuccin_mocha-zsh-syntax-highlighting.zsh && _ct_init mocha'
 
 if [ -x "$(command -v colorls)" ]; then
 	alias ls="colorls"
@@ -90,8 +92,169 @@ fi
 
 cls(){
 	# clear; # <--- uncomment to clear shell on alias commands
-	echo "Retaining past shell activity"
+	echo "${_CT_INFO}Retaining past shell activity${_CT_RESET}"
 }
+
+# -------------------------------------------------------------------
+# Catppuccin palette — global ANSI vars used by aliases.zsh functions
+# for consistent themed output. 24-bit truecolor; reference:
+# https://catppuccin.com/palette
+#
+# Flavor is selected by `$CATPPUCCIN_FLAVOR` (latte / frappe /
+# macchiato / mocha). Default macchiato to match the zsh-syntax-
+# highlighting flavor sourced from ~/.zshrc. The runtime switch
+# aliases (`catppuccin-<flavor>`, defined further down) call back
+# into `_ct_init <flavor>` so our palette stays in sync with the
+# syntax-highlighting one.
+#
+# Two layers:
+#   1. Raw flavor tokens (`_CT_<color>`) — every swatch in the
+#      currently-active flavor.
+#   2. Semantic aliases (`_CT_<role>`) — what we actually mean in
+#      output (phase / hdr / ok / warn / bad / info / ref / path /
+#      done / prompt). All function code uses these so a palette
+#      swap requires changes in one place.
+#
+# `_ct_init [flavor]` re-binds both layers. Honors `$NO_COLOR` as the
+# single opt-out. Called once at source time and again on flavor switch.
+# -------------------------------------------------------------------
+typeset -g CATPPUCCIN_FLAVOR \
+           _CT_RESET _CT_BOLD _CT_DIM _CT_ITALIC \
+           _CT_ROSEWATER _CT_FLAMINGO _CT_PINK _CT_MAUVE _CT_RED _CT_MAROON \
+           _CT_PEACH _CT_YELLOW _CT_GREEN _CT_TEAL _CT_SKY _CT_SAPPHIRE \
+           _CT_BLUE _CT_LAVENDER _CT_TEXT _CT_SUBTEXT0 _CT_OVERLAY1 _CT_OVERLAY0 \
+           _CT_SURFACE2 \
+           _CT_PHASE _CT_HDR _CT_OK _CT_WARN _CT_BAD _CT_INFO _CT_REF _CT_PATH _CT_SHA _CT_DONE _CT_PROMPT
+_ct_init() {
+    local flavor="${1:-${CATPPUCCIN_FLAVOR:-macchiato}}"
+    # Disable only when explicitly opted out via NO_COLOR. We deliberately
+    # do NOT gate on `[[ -t 1 ]]` here: aliases.zsh is sourced from
+    # ~/.zshrc, where stdout may already be redirected by oh-my-zsh /
+    # plugins, leaving the vars empty for the rest of the session. NO_COLOR
+    # remains the supported opt-out; redirect-to-file callers see ANSI in
+    # the file and can strip with `sed 's/\x1b\[[0-9;]*m//g'`.
+    if [[ -n "$NO_COLOR" ]]; then
+        _CT_RESET= _CT_BOLD= _CT_DIM= _CT_ITALIC= \
+        _CT_ROSEWATER= _CT_FLAMINGO= _CT_PINK= _CT_MAUVE= _CT_RED= _CT_MAROON= \
+        _CT_PEACH= _CT_YELLOW= _CT_GREEN= _CT_TEAL= _CT_SKY= _CT_SAPPHIRE= \
+        _CT_BLUE= _CT_LAVENDER= _CT_TEXT= _CT_SUBTEXT0= _CT_OVERLAY1= _CT_OVERLAY0= \
+        _CT_SURFACE2= \
+        _CT_PHASE= _CT_HDR= _CT_OK= _CT_WARN= _CT_BAD= _CT_INFO= _CT_REF= _CT_PATH= _CT_SHA= _CT_DONE= _CT_PROMPT=
+        CATPPUCCIN_FLAVOR="$flavor"
+        return
+    fi
+    local fg=$'\e[38;2;'
+    _CT_RESET=$'\e[0m'
+    _CT_BOLD=$'\e[1m'
+    _CT_DIM=$'\e[2m'
+    _CT_ITALIC=$'\e[3m'
+    case "$flavor" in
+        latte)
+            _CT_ROSEWATER="${fg}220;138;120m"
+            _CT_FLAMINGO="${fg}221;120;120m"
+            _CT_PINK="${fg}234;118;203m"
+            _CT_MAUVE="${fg}136;57;239m"
+            _CT_RED="${fg}210;15;57m"
+            _CT_MAROON="${fg}230;69;83m"
+            _CT_PEACH="${fg}254;100;11m"
+            _CT_YELLOW="${fg}223;142;29m"
+            _CT_GREEN="${fg}64;160;43m"
+            _CT_TEAL="${fg}23;146;153m"
+            _CT_SKY="${fg}4;165;229m"
+            _CT_SAPPHIRE="${fg}32;159;181m"
+            _CT_BLUE="${fg}30;102;245m"
+            _CT_LAVENDER="${fg}114;135;253m"
+            _CT_TEXT="${fg}76;79;105m"
+            _CT_SUBTEXT0="${fg}108;111;133m"
+            _CT_OVERLAY1="${fg}140;143;161m"
+            _CT_OVERLAY0="${fg}156;160;176m"
+            _CT_SURFACE2="${fg}172;176;190m"
+            ;;
+        frappe)
+            _CT_ROSEWATER="${fg}242;213;207m"
+            _CT_FLAMINGO="${fg}238;190;190m"
+            _CT_PINK="${fg}244;184;228m"
+            _CT_MAUVE="${fg}202;158;230m"
+            _CT_RED="${fg}231;130;132m"
+            _CT_MAROON="${fg}234;153;156m"
+            _CT_PEACH="${fg}239;159;118m"
+            _CT_YELLOW="${fg}229;200;144m"
+            _CT_GREEN="${fg}166;209;137m"
+            _CT_TEAL="${fg}129;200;190m"
+            _CT_SKY="${fg}153;209;219m"
+            _CT_SAPPHIRE="${fg}133;193;220m"
+            _CT_BLUE="${fg}140;170;238m"
+            _CT_LAVENDER="${fg}186;187;241m"
+            _CT_TEXT="${fg}198;208;245m"
+            _CT_SUBTEXT0="${fg}165;173;206m"
+            _CT_OVERLAY1="${fg}131;139;167m"
+            _CT_OVERLAY0="${fg}115;121;148m"
+            _CT_SURFACE2="${fg}98;104;128m"
+            ;;
+        macchiato)
+            _CT_ROSEWATER="${fg}244;219;214m"
+            _CT_FLAMINGO="${fg}240;198;198m"
+            _CT_PINK="${fg}245;189;230m"
+            _CT_MAUVE="${fg}198;160;246m"
+            _CT_RED="${fg}237;135;150m"
+            _CT_MAROON="${fg}238;153;160m"
+            _CT_PEACH="${fg}245;169;127m"
+            _CT_YELLOW="${fg}238;212;159m"
+            _CT_GREEN="${fg}166;218;149m"
+            _CT_TEAL="${fg}139;213;202m"
+            _CT_SKY="${fg}145;215;227m"
+            _CT_SAPPHIRE="${fg}125;196;228m"
+            _CT_BLUE="${fg}138;173;244m"
+            _CT_LAVENDER="${fg}183;189;248m"
+            _CT_TEXT="${fg}202;211;245m"
+            _CT_SUBTEXT0="${fg}165;173;203m"
+            _CT_OVERLAY1="${fg}128;135;162m"
+            _CT_OVERLAY0="${fg}110;115;141m"
+            _CT_SURFACE2="${fg}91;96;120m"
+            ;;
+        mocha)
+            _CT_ROSEWATER="${fg}245;224;220m"
+            _CT_FLAMINGO="${fg}242;205;205m"
+            _CT_PINK="${fg}245;194;231m"
+            _CT_MAUVE="${fg}203;166;247m"
+            _CT_RED="${fg}243;139;168m"
+            _CT_MAROON="${fg}235;160;172m"
+            _CT_PEACH="${fg}250;179;135m"
+            _CT_YELLOW="${fg}249;226;175m"
+            _CT_GREEN="${fg}166;227;161m"
+            _CT_TEAL="${fg}148;226;213m"
+            _CT_SKY="${fg}137;220;235m"
+            _CT_SAPPHIRE="${fg}116;199;236m"
+            _CT_BLUE="${fg}137;180;250m"
+            _CT_LAVENDER="${fg}180;190;254m"
+            _CT_TEXT="${fg}205;214;244m"
+            _CT_SUBTEXT0="${fg}166;173;200m"
+            _CT_OVERLAY1="${fg}127;132;156m"
+            _CT_OVERLAY0="${fg}108;112;134m"
+            _CT_SURFACE2="${fg}88;91;112m"
+            ;;
+        *)
+            print -u2 -- "${_CT_BAD}_ct_init:${_CT_RESET} unknown flavor '${_CT_REF}$flavor${_CT_RESET}' (use ${_CT_INFO}latte${_CT_RESET}|${_CT_INFO}frappe${_CT_RESET}|${_CT_INFO}macchiato${_CT_RESET}|${_CT_INFO}mocha${_CT_RESET}); falling back to ${_CT_INFO}macchiato${_CT_RESET}"
+            _ct_init macchiato
+            return
+            ;;
+    esac
+    CATPPUCCIN_FLAVOR="$flavor"
+    # Semantic aliases. Roles are intentionally few; tune the right-
+    # hand side here rather than at call sites.
+    _CT_PHASE="${_CT_BOLD}${_CT_SAPPHIRE}"   # phase markers, action banners
+    _CT_HDR="${_CT_BOLD}${_CT_TEXT}"         # section headers, ====== bars
+    _CT_OK="${_CT_GREEN}"                    # success states
+    _CT_WARN="${_CT_YELLOW}"                 # neutral warnings, ahead, no-upstream
+    _CT_BAD="${_CT_RED}"                     # errors, dirty, detached, diverged, failed
+    _CT_INFO="${_CT_SKY}"                    # informational hints
+    _CT_REF="${_CT_MAUVE}"                   # branch / ref names
+    _CT_PATH="${_CT_OVERLAY1}"               # paths, upstream refs, metadata
+    _CT_SHA="${_CT_PEACH}"                   # short commit SHAs
+    _CT_DONE="${_CT_BOLD}${_CT_GREEN}"       # completion banner
+    _CT_PROMPT="${_CT_PEACH}"                # interactive prompts (y/N etc)
+}
+_ct_init
 
 
 # Set tmux pane label (user option @pane_label, preferred over command name in pane border)
@@ -133,7 +296,7 @@ alias git-clean='git clean -fdx'
 # alias git-new-branch='cls; git checkout -b'
 git-new-branch(){
 	if [ -z "$1" ]; then
-		echo "Error: branch name cannot be empty"
+		echo "${_CT_BAD}Error:${_CT_RESET} branch name cannot be empty"
 		return 1
 	fi
 	branch_name="$1"
@@ -152,7 +315,7 @@ git-new-branch(){
 _git_resolve_ref() {
     local ref="$1" remote="${2:-origin}" repo="${3:-.}"
     if [[ -z "$ref" ]]; then
-        echo "Error: ref cannot be empty" >&2
+        echo "${_CT_BAD}Error:${_CT_RESET} ref cannot be empty" >&2
         return 1
     fi
     if git -C "$repo" show-ref --verify --quiet "refs/heads/$ref"; then
@@ -178,7 +341,7 @@ _git_resolve_ref() {
         echo "sha"
         return 0
     fi
-    echo "Error: ref '$ref' not found locally, on $remote, as tag, or as commit SHA" >&2
+    echo "${_CT_BAD}Error:${_CT_RESET} ref '$ref' not found locally, on $remote, as tag, or as commit SHA" >&2
     return 1
 }
 
@@ -211,32 +374,32 @@ _ensure_tracking_refspec() {
     # treats `$var:r` / `:t` / `:h` / `:e` / `:l` / `:u` as csh-style
     # modifiers, silently stripping characters. The braces make the
     # `:` a literal separator.
-    print -u2 "Branch '${branch}' is not covered by any remote.${remote}.fetch refspec."
-    print -u2 "Choose how to make it trackable:"
-    print -u2 "  1) Exact:  +refs/heads/${branch}:refs/remotes/${remote}/${branch}"
+    print -u2 -- "${_CT_WARN}Branch '${_CT_REF}${branch}${_CT_RESET}${_CT_WARN}' is not covered by any${_CT_RESET} remote.${remote}.fetch ${_CT_WARN}refspec.${_CT_RESET}"
+    print -u2 -- "${_CT_HDR}Choose how to make it trackable:${_CT_RESET}"
+    print -u2 -- "  ${_CT_INFO}1${_CT_RESET}) Exact:  ${_CT_PATH}+refs/heads/${branch}:refs/remotes/${remote}/${branch}${_CT_RESET}"
     local next_idx=2 idx_specific="" idx_broad="" idx_custom
     if [[ -n "$wildcard_specific" ]]; then
         idx_specific=$next_idx
-        print -u2 "  ${idx_specific}) Parent: +refs/heads/${wildcard_specific}:refs/remotes/${remote}/${wildcard_specific}"
+        print -u2 -- "  ${_CT_INFO}${idx_specific}${_CT_RESET}) Parent: ${_CT_PATH}+refs/heads/${wildcard_specific}:refs/remotes/${remote}/${wildcard_specific}${_CT_RESET}"
         next_idx=$((next_idx + 1))
     fi
     if [[ -n "$wildcard_broad" ]]; then
         idx_broad=$next_idx
-        print -u2 "  ${idx_broad}) Top:    +refs/heads/${wildcard_broad}:refs/remotes/${remote}/${wildcard_broad}"
+        print -u2 -- "  ${_CT_INFO}${idx_broad}${_CT_RESET}) Top:    ${_CT_PATH}+refs/heads/${wildcard_broad}:refs/remotes/${remote}/${wildcard_broad}${_CT_RESET}"
         next_idx=$((next_idx + 1))
     fi
     idx_custom=$next_idx
-    print -u2 "  ${idx_custom}) Custom: type your own pattern (e.g., develop/mq-* or release/*)"
-    print -u2 "  s) Skip (branch won't auto-fetch)"
+    print -u2 -- "  ${_CT_INFO}${idx_custom}${_CT_RESET}) Custom: type your own pattern (e.g., ${_CT_PATH}develop/mq-*${_CT_RESET} or ${_CT_PATH}release/*${_CT_RESET})"
+    print -u2 -- "  ${_CT_INFO}s${_CT_RESET}) Skip (branch won't auto-fetch)"
     local reply
-    printf "Choice [1]: " >&2
+    printf "${_CT_PROMPT}Choice [1]:${_CT_RESET} " >&2
     read -r reply
     reply="${reply:-1}"
     local refspec=""
     case "$reply" in
         1) refspec="+refs/heads/${branch}:refs/remotes/${remote}/${branch}" ;;
         s|S)
-            print -u2 "Skipped refspec setup."
+            print -u2 -- "${_CT_WARN}Skipped refspec setup.${_CT_RESET}"
             return 0 ;;
         *)
             if [[ "$reply" == "$idx_specific" ]]; then
@@ -245,29 +408,29 @@ _ensure_tracking_refspec() {
                 refspec="+refs/heads/${wildcard_broad}:refs/remotes/${remote}/${wildcard_broad}"
             elif [[ "$reply" == "$idx_custom" ]]; then
                 local pattern
-                printf "Pattern (will be inserted into +refs/heads/<pattern>:refs/remotes/%s/<pattern>): " "$remote" >&2
+                printf "${_CT_PROMPT}Pattern${_CT_RESET} (will be inserted into ${_CT_PATH}+refs/heads/<pattern>:refs/remotes/%s/<pattern>${_CT_RESET}): " "$remote" >&2
                 read -r pattern
                 if [[ -z "$pattern" ]]; then
-                    print -u2 "Empty pattern; skipped."
+                    print -u2 -- "${_CT_WARN}Empty pattern; skipped.${_CT_RESET}"
                     return 0
                 fi
                 # Sanity check: pattern must match the branch.
                 if [[ "$pattern" != "$branch" && "$pattern" != *'*'* ]]; then
-                    print -u2 "Warning: pattern '${pattern}' has no wildcard and isn't '${branch}' — it won't cover this branch."
+                    print -u2 -- "${_CT_WARN}Warning: pattern '${pattern}' has no wildcard and isn't '${branch}' — it won't cover this branch.${_CT_RESET}"
                 fi
                 refspec="+refs/heads/${pattern}:refs/remotes/${remote}/${pattern}"
             else
-                print -u2 "Unknown choice; skipped."
+                print -u2 -- "${_CT_WARN}Unknown choice; skipped.${_CT_RESET}"
                 return 0
             fi
             ;;
     esac
     if [[ -z "$refspec" ]]; then
-        print -u2 "No valid refspec for that choice; skipped."
+        print -u2 -- "${_CT_WARN}No valid refspec for that choice; skipped.${_CT_RESET}"
         return 0
     fi
     git -C "$repo" config --add "remote.${remote}.fetch" "$refspec"
-    print -u2 "Added refspec to remote.${remote}.fetch: $refspec"
+    print -u2 -- "${_CT_OK}Added refspec${_CT_RESET} to remote.${remote}.fetch: ${_CT_PATH}$refspec${_CT_RESET}"
     # Fetch via the new refspec so refs/remotes/${remote}/* is populated.
     git -C "$repo" fetch "$remote" >/dev/null 2>&1 || true
 }
@@ -291,6 +454,24 @@ _print_trimmed() {
           for (i = NR - tail + 1; i <= NR; i++) print indent lines[i]
         }
       }'
+}
+
+# -------------------------------------------------------------------
+# _capture_with_color — run a command and capture its output WITH ANSI
+# colors preserved. `$(cmd)` makes stdout a pipe, which makes git/hub
+# auto-disable colors; `-c color.ui=always` doesn't fix it for progress
+# lines or hub's own status lines. Routing through `unbuffer` (expect)
+# gives the child a PTY so it emits colors as if running interactively.
+# Falls back to a plain capture if `unbuffer` is unavailable.
+# Stderr is merged to stdout (so callers don't need their own 2>&1).
+# Usage: out=$(_capture_with_color git -C <path> fetch ...)
+# -------------------------------------------------------------------
+_capture_with_color() {
+    if (( $+commands[unbuffer] )); then
+        unbuffer "$@" 2>&1
+    else
+        "$@" 2>&1
+    fi
 }
 
 # -------------------------------------------------------------------
@@ -325,7 +506,7 @@ _refspecs_covering_branch() {
 # -------------------------------------------------------------------
 git-checkout-ref() {
     if [ -z "$1" ]; then
-        echo "Error: ref cannot be empty"
+        echo "${_CT_BAD}Error:${_CT_RESET} ref cannot be empty"
         return 1
     fi
     local ref="$1" remote="${2:-origin}"
@@ -372,9 +553,9 @@ git-checkout-ref() {
 # -------------------------------------------------------------------
 claude() {
     if ! ssh-add -l >/dev/null 2>&1; then
-        print -P -u2 "%F{yellow}ssh-agent has no keys; running ssh-add first.%f"
+        print -u2 -- "${_CT_WARN}ssh-agent has no keys; running ssh-add first.${_CT_RESET}"
         if ! ssh-add; then
-            print -P -u2 "%F{red}ssh-add failed; not launching claude.%f"
+            print -u2 -- "${_CT_BAD}ssh-add failed; not launching claude.${_CT_RESET}"
             return 1
         fi
     fi
@@ -390,7 +571,7 @@ claude() {
 #                                           Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
 #   wt add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
 #   wt rm [-f] <worktree>                   Remove worktree (-f to force when dirty); auto-purges its bazel cache
-#   wt sync                                 Fetch origin once, fast-forward each worktree's branch to its upstream
+#   wt sync                                 Fetch origin once + `hub sync` in MAIN_REPO, fast-forward each worktree's branch to its upstream
 #   wt merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
 #   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
 #   wt prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
@@ -401,11 +582,16 @@ wt() {
     # XTRACE`/`VERBOSE` (or `set -x`). Without LOCAL_OPTIONS, any trace
     # state in the surrounding shell leaks in and prints every variable
     # assignment in here (including multi-kilobyte merge outputs).
-    setopt local_options no_xtrace no_verbose
+    # TYPESET_SILENT suppresses zsh's default "var=value" announcement
+    # when a `local` redeclares a name that already has a value in the
+    # current scope — which happens every iteration of a for loop that
+    # carries `local foo` inside its body, dumping the *previous* iter's
+    # values between status lines.
+    setopt local_options no_xtrace no_verbose typeset_silent
     local WT_DIR="$HOME/worktrees"
     local MAIN_REPO="${MAIN_REPO:-$HOME}"
     if ! git -C "$MAIN_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "wt: \$MAIN_REPO ($MAIN_REPO) is not a git repository. Set MAIN_REPO to your main repo path." >&2
+        echo "${_CT_BAD}wt:${_CT_RESET} \$MAIN_REPO ($MAIN_REPO) is not a git repository. Set MAIN_REPO to your main repo path." >&2
         return 1
     fi
     local action="$1"
@@ -423,55 +609,55 @@ wt() {
         push)
             local wt_name="$1" fallback="${2:-master}"
             if [[ -z "$wt_name" ]]; then
-                echo "Usage: wt push <worktree> [switch-to]  (default switch-to: master)"
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt push <worktree> [switch-to]  (default switch-to: master)"
                 return 1
             fi
             local cur_branch
             cur_branch=$(__wt_branch "$MAIN_REPO")
-            [[ -z "$cur_branch" ]] && { echo "Error: main repo is in detached HEAD"; return 1; }
-            [[ "$cur_branch" == "$fallback" ]] && { echo "Error: already on $fallback"; return 1; }
-            echo "push: $cur_branch → ~/worktrees/$wt_name, main → $fallback"
+            [[ -z "$cur_branch" ]] && { echo "${_CT_BAD}Error:${_CT_RESET} main repo is in detached HEAD"; return 1; }
+            [[ "$cur_branch" == "$fallback" ]] && { echo "${_CT_BAD}Error:${_CT_RESET} already on $fallback"; return 1; }
+            echo "${_CT_PHASE}push:${_CT_RESET} $cur_branch → ~/worktrees/$wt_name, main → $fallback"
             git -C "$MAIN_REPO" checkout "$fallback" || return 1
             git worktree add "$WT_DIR/$wt_name" "$cur_branch" || return 1
-            echo "Done. main=$fallback, worktree=~/worktrees/$wt_name ($cur_branch)"
+            echo "${_CT_DONE}Done.${_CT_RESET} main=$fallback, worktree=~/worktrees/$wt_name ($cur_branch)"
             ;;
         pull)
             local wt_name="$1"
             if [[ -z "$wt_name" ]]; then
-                echo "Usage: wt pull <worktree>"
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt pull <worktree>"
                 return 1
             fi
             local wt_path="$WT_DIR/$wt_name"
-            [[ -d "$wt_path" ]] || { echo "Error: no worktree at $wt_path"; return 1; }
+            [[ -d "$wt_path" ]] || { echo "${_CT_BAD}Error:${_CT_RESET} no worktree at $wt_path"; return 1; }
             local target_branch
             target_branch=$(__wt_branch "$wt_path")
-            [[ -z "$target_branch" ]] && { echo "Error: worktree is in detached HEAD"; return 1; }
-            echo "pull: $target_branch → main dir (removing ~/worktrees/$wt_name)"
+            [[ -z "$target_branch" ]] && { echo "${_CT_BAD}Error:${_CT_RESET} worktree is in detached HEAD"; return 1; }
+            echo "${_CT_PHASE}pull:${_CT_RESET} $target_branch → main dir (removing ~/worktrees/$wt_name)"
             git worktree remove "$wt_path" || return 1
             git -C "$MAIN_REPO" checkout "$target_branch" || return 1
-            echo "Done. main=$target_branch"
+            echo "${_CT_DONE}Done.${_CT_RESET} main=$target_branch"
             ;;
         swap)
             local wt_name="$1" new_wt_name="$2"
             if [[ -z "$wt_name" ]]; then
-                echo "Usage: wt swap <worktree> [new-worktree-name]"
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt swap <worktree> [new-worktree-name]"
                 return 1
             fi
             local wt_path="$WT_DIR/$wt_name"
-            [[ -d "$wt_path" ]] || { echo "Error: no worktree at $wt_path"; return 1; }
+            [[ -d "$wt_path" ]] || { echo "${_CT_BAD}Error:${_CT_RESET} no worktree at $wt_path"; return 1; }
             local cur_branch target_branch
             cur_branch=$(__wt_branch "$MAIN_REPO")
             target_branch=$(__wt_branch "$wt_path")
-            [[ -z "$cur_branch" ]] && { echo "Error: main repo is in detached HEAD"; return 1; }
-            [[ -z "$target_branch" ]] && { echo "Error: worktree is in detached HEAD"; return 1; }
+            [[ -z "$cur_branch" ]] && { echo "${_CT_BAD}Error:${_CT_RESET} main repo is in detached HEAD"; return 1; }
+            [[ -z "$target_branch" ]] && { echo "${_CT_BAD}Error:${_CT_RESET} worktree is in detached HEAD"; return 1; }
             [[ -z "$new_wt_name" ]] && new_wt_name=$(__wt_name_from_branch "$cur_branch")
-            echo "swap: main ($cur_branch) ↔ ~/worktrees/$wt_name ($target_branch)"
-            echo "  main → $target_branch"
-            echo "  ~/worktrees/$new_wt_name → $cur_branch"
+            echo "${_CT_PHASE}swap:${_CT_RESET} main (${_CT_REF}$cur_branch${_CT_RESET}) ↔ ${_CT_PATH}~/worktrees/$wt_name${_CT_RESET} (${_CT_REF}$target_branch${_CT_RESET})"
+            echo "  main → ${_CT_REF}$target_branch${_CT_RESET}"
+            echo "  ${_CT_PATH}~/worktrees/$new_wt_name${_CT_RESET} → ${_CT_REF}$cur_branch${_CT_RESET}"
             git worktree remove "$wt_path" || return 1
             git -C "$MAIN_REPO" checkout "$target_branch" || return 1
             git worktree add "$WT_DIR/$new_wt_name" "$cur_branch" || return 1
-            echo "Done."
+            echo "${_CT_DONE}Done.${_CT_RESET}"
             ;;
         fork)
             # wt fork --from <wt|branch|sha|tag> --name <new-branch> [--into <wt>]
@@ -512,16 +698,16 @@ Usage: wt fork --from <ref> --name <new-branch> [--into <wt-name>]
 FORKHELP
                         return 0 ;;
                     *)
-                        echo "wt fork: unexpected arg: $1" >&2
+                        echo "${_CT_BAD}wt fork:${_CT_RESET} unexpected arg: $1" >&2
                         return 1 ;;
                 esac
             done
             if [[ -z "$from_ref" || -z "$new_branch" ]]; then
-                echo "Usage: wt fork --from <ref> --name <new-branch> [--into <wt-name>]"
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt fork --from <ref> --name <new-branch> [--into <wt-name>]"
                 return 1
             fi
             if git -C "$MAIN_REPO" show-ref --verify --quiet "refs/heads/$new_branch"; then
-                echo "Error: branch '$new_branch' already exists locally" >&2
+                echo "${_CT_BAD}Error:${_CT_RESET} branch '$new_branch' already exists locally" >&2
                 return 1
             fi
             local main_basename resolved_ref="" from_label=""
@@ -550,7 +736,7 @@ FORKHELP
             if [[ -z "$into_name" ]]; then
                 into_name=$(__wt_name_from_branch "$new_branch")
                 if [[ -d "$WT_DIR/$into_name" || "$into_name" == "$main_basename" ]]; then
-                    echo "Error: derived worktree '$into_name' already exists; pass --into <wt>" >&2
+                    echo "${_CT_BAD}Error:${_CT_RESET} derived worktree '$into_name' already exists; pass --into <wt>" >&2
                     return 1
                 fi
             fi
@@ -562,35 +748,35 @@ FORKHELP
             fi
             if [[ -d "$target_path" ]]; then
                 if [[ -n "$(git -C "$target_path" status --porcelain 2>/dev/null)" ]]; then
-                    echo "Error: target worktree is dirty: $target_path" >&2
+                    echo "${_CT_BAD}Error:${_CT_RESET} target worktree is dirty: $target_path" >&2
                     return 1
                 fi
-                echo "fork: in-place $target_path"
-                echo "  base: $resolved_ref ($from_label)"
-                echo "  new branch: $new_branch"
+                echo "${_CT_PHASE}fork:${_CT_RESET} in-place ${_CT_PATH}$target_path${_CT_RESET}"
+                echo "  base: ${_CT_REF}$resolved_ref${_CT_RESET} (${_CT_PATH}$from_label${_CT_RESET})"
+                echo "  new branch: ${_CT_REF}$new_branch${_CT_RESET}"
                 git -C "$target_path" checkout -b "$new_branch" "$resolved_ref" || return 1
             else
-                echo "fork: new worktree $target_path"
-                echo "  base: $resolved_ref ($from_label)"
-                echo "  new branch: $new_branch"
+                echo "${_CT_PHASE}fork:${_CT_RESET} new worktree ${_CT_PATH}$target_path${_CT_RESET}"
+                echo "  base: ${_CT_REF}$resolved_ref${_CT_RESET} (${_CT_PATH}$from_label${_CT_RESET})"
+                echo "  new branch: ${_CT_REF}$new_branch${_CT_RESET}"
                 git -C "$MAIN_REPO" worktree add -b "$new_branch" "$target_path" "$resolved_ref" || return 1
             fi
-            echo "Done. worktree=$target_path ($new_branch)"
+            echo "${_CT_DONE}Done.${_CT_RESET} worktree=${_CT_PATH}$target_path${_CT_RESET} (${_CT_REF}$new_branch${_CT_RESET})"
             ;;
         add)
             local wt_name="$1" ref="$2" remote="${3:-origin}"
             if [[ -z "$wt_name" || -z "$ref" ]]; then
-                echo "Usage: wt add <worktree-name> <ref> [remote]  (default remote: origin)"
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt add <worktree-name> <ref> [remote]  (default remote: origin)"
                 return 1
             fi
             local wt_path="$WT_DIR/$wt_name"
             if [[ -e "$wt_path" ]]; then
-                echo "Error: $wt_path already exists"
+                echo "${_CT_BAD}Error:${_CT_RESET} $wt_path already exists"
                 return 1
             fi
             local source
             source=$(_git_resolve_ref "$ref" "$remote" "$MAIN_REPO") || return 1
-            echo "add: $ref → ~/worktrees/$wt_name (source: $source)"
+            echo "${_CT_PHASE}add:${_CT_RESET} $ref → ~/worktrees/$wt_name (source: $source)"
             case "$source" in
                 local)
                     git -C "$MAIN_REPO" worktree add "$wt_path" "$ref" || return 1
@@ -615,7 +801,7 @@ FORKHELP
                     git -C "$MAIN_REPO" worktree add --detach "$wt_path" "$ref" || return 1
                     ;;
             esac
-            echo "Done. worktree=~/worktrees/$wt_name ($ref)"
+            echo "${_CT_DONE}Done.${_CT_RESET} worktree=~/worktrees/$wt_name ($ref)"
             ;;
         rm|remove)
             local force=0 wt_name="$1"
@@ -624,14 +810,14 @@ FORKHELP
                 wt_name="$2"
             fi
             if [[ -z "$wt_name" ]]; then
-                echo "Usage: wt rm [-f] <worktree>"
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt rm [-f] <worktree>"
                 return 1
             fi
             local wt_path="$WT_DIR/$wt_name"
-            [[ -d "$wt_path" ]] || { echo "Error: no worktree at $wt_path"; return 1; }
+            [[ -d "$wt_path" ]] || { echo "${_CT_BAD}Error:${_CT_RESET} no worktree at $wt_path"; return 1; }
             local target_branch
             target_branch=$(__wt_branch "$wt_path")
-            echo "rm: removing ~/worktrees/$wt_name (${target_branch:-detached})"
+            echo "${_CT_PHASE}rm:${_CT_RESET} removing ~/worktrees/$wt_name (${target_branch:-detached})"
             if (( force )); then
                 git -C "$MAIN_REPO" worktree remove --force "$wt_path" || return 1
             else
@@ -648,15 +834,15 @@ FORKHELP
                     [[ -n "$line" ]] && matching+=("$line")
                 done < <(_refspecs_covering_branch "$MAIN_REPO" "$target_branch")
                 if (( ${#matching[@]} > 0 )); then
-                    print -u2 "Fetch refspecs currently covering '$target_branch':"
+                    print -u2 -- "${_CT_HDR}Fetch refspecs currently covering '${_CT_REF}$target_branch${_CT_RESET}${_CT_HDR}':${_CT_RESET}"
                     local i remote refspec
                     for (( i=1; i<=${#matching[@]}; i++ )); do
                         remote="${matching[i]%%|*}"
                         refspec="${matching[i]#*|}"
-                        print -u2 "  $i) [$remote] $refspec"
+                        print -u2 -- "  ${_CT_INFO}$i${_CT_RESET}) [${_CT_PATH}$remote${_CT_RESET}] ${_CT_PATH}$refspec${_CT_RESET}"
                     done
                     local reply
-                    printf "Remove which? [comma-separated indices / all / Enter=skip]: " >&2
+                    printf "${_CT_PROMPT}Remove which?${_CT_RESET} [comma-separated indices / all / Enter=skip]: " >&2
                     read -r reply
                     if [[ -n "$reply" && "$reply" != $'\n' ]]; then
                         local -a indices
@@ -670,15 +856,15 @@ FORKHELP
                             idx="${idx// /}"
                             [[ -z "$idx" ]] && continue
                             if [[ ! "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#matching[@]} )); then
-                                print -u2 "  invalid index: $idx"
+                                print -u2 -- "  ${_CT_BAD}invalid index:${_CT_RESET} $idx"
                                 continue
                             fi
                             remote="${matching[idx]%%|*}"
                             refspec="${matching[idx]#*|}"
                             if git -C "$MAIN_REPO" config --unset-all --fixed-value "remote.${remote}.fetch" "$refspec"; then
-                                print -u2 "  removed: [$remote] $refspec"
+                                print -u2 -- "  ${_CT_OK}removed:${_CT_RESET} [${_CT_PATH}$remote${_CT_RESET}] ${_CT_PATH}$refspec${_CT_RESET}"
                             else
-                                print -u2 "  failed to remove: [$remote] $refspec" >&2
+                                print -u2 -- "  ${_CT_BAD}failed to remove:${_CT_RESET} [${_CT_PATH}$remote${_CT_RESET}] ${_CT_PATH}$refspec${_CT_RESET}" >&2
                             fi
                         done
                     fi
@@ -699,14 +885,14 @@ FORKHELP
                     if [[ "$ws" == "$wt_path" ]]; then
                         chmod -R u+w "${ob%/}" 2>/dev/null
                         if rm -rf "${ob%/}"; then
-                            echo "  purged bazel cache: ${ob%/}"
+                            echo "  ${_CT_OK}purged bazel cache:${_CT_RESET} ${_CT_PATH}${ob%/}${_CT_RESET}"
                         else
-                            echo "  failed to purge ${ob%/} (try \`wt prune --sudo\`)" >&2
+                            echo "  ${_CT_BAD}failed to purge${_CT_RESET} ${_CT_PATH}${ob%/}${_CT_RESET} (try \`wt prune --sudo\`)" >&2
                         fi
                     fi
                 done
             fi
-            echo "Done."
+            echo "${_CT_DONE}Done.${_CT_RESET}"
             ;;
         list|ls)
             git -C "$MAIN_REPO" worktree list
@@ -743,7 +929,7 @@ Options:
 CLEANHELP
                         return 0 ;;
                     *)
-                        echo "wt clean: unexpected arg: $1" >&2
+                        echo "${_CT_BAD}wt clean:${_CT_RESET} unexpected arg: $1" >&2
                         return 1 ;;
                 esac
             done
@@ -753,11 +939,11 @@ CLEANHELP
                 else
                     target_path="$WT_DIR/$into_name"
                 fi
-                [[ -d "$target_path" ]] || { echo "Error: no worktree at $target_path"; return 1; }
+                [[ -d "$target_path" ]] || { echo "${_CT_BAD}Error:${_CT_RESET} no worktree at $target_path"; return 1; }
             else
                 target_path=$(git rev-parse --show-toplevel 2>/dev/null)
                 if [[ -z "$target_path" ]]; then
-                    echo "wt clean: cwd is not inside a git worktree (use --into <name>)" >&2
+                    echo "${_CT_BAD}wt clean:${_CT_RESET} cwd is not inside a git worktree (use --into <name>)" >&2
                     return 1
                 fi
             fi
@@ -765,39 +951,39 @@ CLEANHELP
             (( extend_ignored )) && clean_flags="-fdx"
             local target_branch
             target_branch=$(__wt_branch "$target_path")
-            echo "clean: $target_path (${target_branch:-detached})"
-            echo "  staged + unstaged (will be discarded by \`git reset --hard HEAD\`):"
+            echo "${_CT_PHASE}clean:${_CT_RESET} ${_CT_PATH}$target_path${_CT_RESET} (${_CT_REF}${target_branch:-detached}${_CT_RESET})"
+            echo "  ${_CT_HDR}staged + unstaged${_CT_RESET} (will be discarded by \`${_CT_PATH}git reset --hard HEAD${_CT_RESET}\`):"
             local tracked
             tracked=$(git -C "$target_path" status --porcelain | grep -v '^??' | sed 's/^.. //')
             if [[ -n "$tracked" ]]; then
                 echo "$tracked" | sed 's/^/    /'
             else
-                echo "    (none)"
+                echo "    ${_CT_PATH}(none)${_CT_RESET}"
             fi
-            echo "  untracked (will be removed by \`git clean ${clean_flags}\`):"
+            echo "  ${_CT_HDR}untracked${_CT_RESET} (will be removed by \`${_CT_PATH}git clean ${clean_flags}${_CT_RESET}\`):"
             local untracked
             untracked=$(git -C "$target_path" clean -nd ${clean_flags} 2>/dev/null | sed -n 's/^Would remove //p')
             if [[ -n "$untracked" ]]; then
                 echo "$untracked" | sed 's/^/    /'
             else
-                echo "    (none)"
+                echo "    ${_CT_PATH}(none)${_CT_RESET}"
             fi
             if [[ -z "$tracked" && -z "$untracked" ]]; then
-                echo "Nothing to clean."
+                echo "${_CT_OK}Nothing to clean.${_CT_RESET}"
                 return 0
             fi
             if (( ! assume_yes )); then
                 local reply
-                printf "Proceed? This is IRREVERSIBLE [y/N] "
+                printf "${_CT_PROMPT}Proceed?${_CT_RESET} This is ${_CT_BAD}IRREVERSIBLE${_CT_RESET} [y/N] "
                 read -r reply
                 if [[ "$reply" != "y" && "$reply" != "Y" ]]; then
-                    echo "Aborted."
+                    echo "${_CT_BAD}Aborted.${_CT_RESET}"
                     return 1
                 fi
             fi
             git -C "$target_path" reset --hard HEAD || return 1
             git -C "$target_path" clean ${clean_flags} || return 1
-            echo "Done."
+            echo "${_CT_DONE}Done.${_CT_RESET}"
             ;;
         prune)
             # Scan bazel output_base dirs (~/.cache/bazel/_bazel_$USER/<32-hex>/)
@@ -822,13 +1008,13 @@ Usage: wt prune [-y] [--sudo]
 PRUNEHELP
                         return 0 ;;
                     *)
-                        echo "wt prune: unexpected arg: $1" >&2
+                        echo "${_CT_BAD}wt prune:${_CT_RESET} unexpected arg: $1" >&2
                         return 1 ;;
                 esac
             done
             local bazel_root="$HOME/.cache/bazel/_bazel_$USER"
             if [[ ! -d "$bazel_root" ]]; then
-                echo "No bazel cache at $bazel_root"
+                echo "${_CT_WARN}No bazel cache at${_CT_RESET} ${_CT_PATH}$bazel_root${_CT_RESET}"
                 return 0
             fi
             local -a orphans orphan_paths
@@ -844,21 +1030,21 @@ PRUNEHELP
                 orphan_paths+=("$ws")
             done
             if (( ${#orphans[@]} == 0 )); then
-                echo "Nothing to prune."
+                echo "${_CT_OK}Nothing to prune.${_CT_RESET}"
                 return 0
             fi
-            echo "Orphaned bazel output_base dirs (workspace path missing):"
+            echo "${_CT_HDR}Orphaned bazel output_base dirs${_CT_RESET} (workspace path missing):"
             local i ob_size
             for (( i=1; i<=${#orphans[@]}; i++ )); do
                 ob_size=$(du -sh "${orphans[i]}" 2>/dev/null | awk '{print $1}')
-                printf "  %s  (was: %s, %s)\n" "${orphans[i]}" "${orphan_paths[i]}" "${ob_size:-?}"
+                printf "  ${_CT_PATH}%s${_CT_RESET}  (was: ${_CT_PATH}%s${_CT_RESET}, ${_CT_WARN}%s${_CT_RESET})\n" "${orphans[i]}" "${orphan_paths[i]}" "${ob_size:-?}"
             done
             if (( ! assume_yes )); then
                 local reply
-                printf "Proceed? rm -rf %d dir(s) [y/N] " "${#orphans[@]}"
+                printf "${_CT_PROMPT}Proceed?${_CT_RESET} ${_CT_BAD}rm -rf${_CT_RESET} %d dir(s) [y/N] " "${#orphans[@]}"
                 read -r reply
                 if [[ "$reply" != "y" && "$reply" != "Y" ]]; then
-                    echo "Aborted."
+                    echo "${_CT_BAD}Aborted.${_CT_RESET}"
                     return 1
                 fi
             fi
@@ -868,14 +1054,14 @@ PRUNEHELP
             for ob in "${orphans[@]}"; do
                 $sudo_cmd chmod -R u+w "$ob" 2>/dev/null
                 if $sudo_cmd rm -rf "$ob"; then
-                    echo "  removed $ob"
+                    echo "  ${_CT_OK}removed${_CT_RESET} ${_CT_PATH}$ob${_CT_RESET}"
                     removed=$((removed + 1))
                 else
-                    echo "  failed: $ob (try --sudo)" >&2
+                    echo "  ${_CT_BAD}failed:${_CT_RESET} ${_CT_PATH}$ob${_CT_RESET} (try --sudo)" >&2
                     failed=$((failed + 1))
                 fi
             done
-            echo "Done. Pruned $removed dir(s)$( (( failed )) && echo ", $failed failed" )."
+            echo "${_CT_DONE}Done.${_CT_RESET} Pruned $removed dir(s)$( (( failed )) && echo ", $failed failed" )."
             (( failed )) && return 1
             ;;
         sync)
@@ -889,9 +1075,10 @@ PRUNEHELP
                     cat <<'SYNCHELP'
 Usage: wt sync
   Single `git fetch origin --prune` from the main repo (shared refs),
-  then per-worktree `git merge --ff-only @{u}` on the checked-out
-  branch. Skips dirty / detached / upstream-less worktrees. Logs
-  diverged or ahead branches without modifying them.
+  then `hub sync` in MAIN_REPO to ff every local branch that tracks
+  a remote, then per-worktree `git merge --ff-only @{u}` on the
+  checked-out branch. Skips dirty / detached / upstream-less
+  worktrees. Logs diverged or ahead branches without modifying them.
 SYNCHELP
                     return 0 ;;
             esac
@@ -902,18 +1089,46 @@ SYNCHELP
             # Verbose subcommand output is trimmed via `_print_trimmed` to
             # keep `git merge --ff-only` checkout walls from drowning the
             # per-wt signal.
-            echo "[fetch] $MAIN_REPO: git fetch origin --prune"
+            # Captures route through `_capture_with_color` (unbuffer/PTY) so
+            # git/hub still emit ANSI colors despite stdout being a pipe.
+            # CRs from progress lines are flattened to newlines before
+            # `_print_trimmed` so head/tail trimming sees them as separate
+            # entries rather than one giant line.
+            # Uses the catppuccin-mocha semantic palette (_CT_*) defined
+            # globally at the top of this file.
+            echo "${_CT_PHASE}[fetch]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: git fetch origin --prune"
             # Capture output then print, so sed doesn't mask the fetch's exit
             # status (a `git | sed` pipeline yields sed's status).
             local fetch_output fetch_rc
-            fetch_output=$(git -C "$MAIN_REPO" fetch origin --prune 2>&1)
+            fetch_output=$(_capture_with_color git -C "$MAIN_REPO" fetch origin --prune)
             fetch_rc=$?
-            [[ -n "$fetch_output" ]] && printf '%s\n' "$fetch_output" | _print_trimmed 5 5 "    "
+            if [[ -n "$fetch_output" ]]; then
+                printf '%s\n' "$fetch_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
+            else
+                echo "    ${_CT_PATH}(no updates)${_CT_RESET}"
+            fi
             if (( fetch_rc != 0 )); then
-                echo "[fetch] failed (rc=$fetch_rc); aborting wt sync" >&2
+                echo "${_CT_BAD}[fetch] failed (rc=$fetch_rc); aborting wt sync${_CT_RESET}" >&2
                 return 1
             fi
-            echo "[worktrees]"
+            # `hub sync` ff's every local branch in MAIN_REPO that tracks a
+            # remote (not just the checked-out one). Complements the per-wt
+            # ff below, which only touches branches currently checked out
+            # somewhere.
+            echo "${_CT_PHASE}[hub-sync]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: hub sync"
+            local hub_output hub_rc
+            hub_output=$(_capture_with_color hub -C "$MAIN_REPO" sync)
+            hub_rc=$?
+            if [[ -n "$hub_output" ]]; then
+                printf '%s\n' "$hub_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
+            else
+                echo "    ${_CT_PATH}(all branches up-to-date)${_CT_RESET}"
+            fi
+            if (( hub_rc != 0 )); then
+                echo "${_CT_BAD}[hub-sync] failed (rc=$hub_rc); aborting wt sync${_CT_RESET}" >&2
+                return 1
+            fi
+            echo "${_CT_PHASE}[worktrees]${_CT_RESET}"
             local -a wts
             local wt_path
             # Per-category lists for the grouped summary at the end.
@@ -923,6 +1138,15 @@ SYNCHELP
                 [[ -z "$wt_path" ]] && continue
                 wts+=("$wt_path")
             done < <(git -C "$MAIN_REPO" worktree list --porcelain | awk '/^worktree /{print $2}')
+            # Per-wt metadata block (printed below the status line). Layout
+            # is a single 4-space-indented column of `label  value` pairs;
+            # labels are dim, values colored per kind (refs mauve, SHAs
+            # peach, ahead/behind warn/bad). Helper kept inside wt() so it
+            # closes over the _CT_* globals without needing them on PATH.
+            _wt_sync_meta() {
+                # _wt_sync_meta <key> <value-colored>
+                printf '      %s%-9s%s %b\n' "${_CT_PATH}" "$1" "${_CT_RESET}" "$2"
+            }
             for wt_path in $wts; do
                 local label
                 if [[ "$wt_path" == "$MAIN_REPO" ]]; then
@@ -930,74 +1154,143 @@ SYNCHELP
                 else
                     label="${wt_path##*/}"
                 fi
-                echo "  ===== $label ====="
+                echo "  ${_CT_HDR}===== $label =====${_CT_RESET}"
                 if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
-                    echo "  [dirty]"
+                    echo "  ${_CT_BAD}[dirty]${_CT_RESET}"
+                    # Break dirty count into staged / unstaged / untracked.
+                    # `diff --cached` = index vs HEAD; `diff` = worktree vs
+                    # index; `ls-files --others --exclude-standard` =
+                    # untracked respecting .gitignore.
+                    local n_staged n_unstaged n_untracked
+                    n_staged=$(git -C "$wt_path" diff --cached --name-only 2>/dev/null | wc -l)
+                    n_unstaged=$(git -C "$wt_path" diff --name-only 2>/dev/null | wc -l)
+                    n_untracked=$(git -C "$wt_path" ls-files --others --exclude-standard 2>/dev/null | wc -l)
+                    _wt_sync_meta "files" "${_CT_WARN}${n_staged}${_CT_RESET} staged + ${_CT_WARN}${n_unstaged}${_CT_RESET} unstaged + ${_CT_WARN}${n_untracked}${_CT_RESET} untracked"
+                    # Even dirty wts get the branch/upstream/sha context so
+                    # the user can see how far the dirty state is from
+                    # origin. `wt sync` won't ff a dirty wt (refuses), but
+                    # the metadata still helps decide what to do.
+                    local dirty_branch dirty_upstream dirty_local_short dirty_remote_short dirty_ahead dirty_behind
+                    dirty_branch=$(__wt_branch "$wt_path")
+                    if [[ -n "$dirty_branch" ]]; then
+                        _wt_sync_meta "branch" "${_CT_REF}${dirty_branch}${_CT_RESET}"
+                        dirty_upstream=$(git -C "$wt_path" rev-parse --abbrev-ref --symbolic-full-name "${dirty_branch}@{u}" 2>/dev/null)
+                        dirty_local_short=$(git -C "$wt_path" rev-parse --short HEAD 2>/dev/null)
+                        if [[ -n "$dirty_upstream" ]]; then
+                            _wt_sync_meta "upstream" "${_CT_REF}${dirty_upstream}${_CT_RESET}"
+                            dirty_remote_short=$(git -C "$wt_path" rev-parse --short "$dirty_upstream" 2>/dev/null)
+                            dirty_ahead=$(git -C "$wt_path" rev-list --count "${dirty_upstream}..HEAD" 2>/dev/null)
+                            dirty_behind=$(git -C "$wt_path" rev-list --count "HEAD..${dirty_upstream}" 2>/dev/null)
+                            if [[ "$dirty_local_short" == "$dirty_remote_short" ]]; then
+                                _wt_sync_meta "sha" "${_CT_SHA}${dirty_local_short}${_CT_RESET} ${_CT_PATH}(in sync with upstream)${_CT_RESET}"
+                            else
+                                _wt_sync_meta "local"  "${_CT_SHA}${dirty_local_short}${_CT_RESET} ${_CT_PATH}(ahead ${_CT_WARN}${dirty_ahead}${_CT_PATH})${_CT_RESET}"
+                                _wt_sync_meta "remote" "${_CT_SHA}${dirty_remote_short}${_CT_RESET} ${_CT_PATH}(behind ${_CT_WARN}${dirty_behind}${_CT_PATH})${_CT_RESET}"
+                            fi
+                        else
+                            _wt_sync_meta "sha" "${_CT_SHA}${dirty_local_short}${_CT_RESET} ${_CT_PATH}(no upstream)${_CT_RESET}"
+                        fi
+                    else
+                        local dirty_detached
+                        dirty_detached=$(git -C "$wt_path" rev-parse --short HEAD 2>/dev/null)
+                        [[ -n "$dirty_detached" ]] && _wt_sync_meta "sha" "${_CT_SHA}${dirty_detached}${_CT_RESET} ${_CT_PATH}(detached)${_CT_RESET}"
+                    fi
                     dirty_list+=("$label")
                     continue
                 fi
                 local branch
                 branch=$(__wt_branch "$wt_path")
                 if [[ -z "$branch" ]]; then
-                    echo "  [detached]"
+                    echo "  ${_CT_BAD}[detached]${_CT_RESET}"
+                    local detached_sha
+                    detached_sha=$(git -C "$wt_path" rev-parse --short HEAD 2>/dev/null)
+                    [[ -n "$detached_sha" ]] && _wt_sync_meta "sha" "${_CT_SHA}${detached_sha}${_CT_RESET}"
                     detached_list+=("$label")
                     continue
                 fi
                 local upstream
                 upstream=$(git -C "$wt_path" rev-parse --abbrev-ref --symbolic-full-name "${branch}@{u}" 2>/dev/null)
                 if [[ -z "$upstream" ]]; then
-                    echo "  [no-upstream] $branch"
+                    echo "  ${_CT_WARN}[no-upstream]${_CT_RESET} ${_CT_REF}$branch${_CT_RESET}"
+                    local local_short
+                    local_short=$(git -C "$wt_path" rev-parse --short HEAD 2>/dev/null)
+                    _wt_sync_meta "branch" "${_CT_REF}${branch}${_CT_RESET}"
+                    [[ -n "$local_short" ]] && _wt_sync_meta "sha" "${_CT_SHA}${local_short}${_CT_RESET}"
                     no_upstream_list+=("$label ($branch)")
                     continue
                 fi
-                local local_sha remote_sha
+                local local_sha remote_sha local_short remote_short
                 local_sha=$(git -C "$wt_path" rev-parse HEAD)
                 remote_sha=$(git -C "$wt_path" rev-parse "$upstream")
+                local_short="${local_sha[1,8]}"
+                remote_short="${remote_sha[1,8]}"
+                # ahead/behind counts — relative to upstream. Used to size the
+                # "behind N" / "ahead N" hints in the meta block.
+                local n_ahead n_behind
+                n_ahead=$(git -C "$wt_path" rev-list --count "${upstream}..HEAD" 2>/dev/null)
+                n_behind=$(git -C "$wt_path" rev-list --count "HEAD..${upstream}" 2>/dev/null)
                 if [[ "$local_sha" == "$remote_sha" ]]; then
-                    echo "  [up-to-date] $branch @ $upstream"
+                    echo "  ${_CT_OK}[up-to-date]${_CT_RESET} ${_CT_REF}$branch${_CT_RESET} ${_CT_PATH}@ $upstream${_CT_RESET}"
+                    _wt_sync_meta "branch"   "${_CT_REF}${branch}${_CT_RESET}"
+                    _wt_sync_meta "upstream" "${_CT_REF}${upstream}${_CT_RESET}"
+                    _wt_sync_meta "sha"      "${_CT_SHA}${local_short}${_CT_RESET}"
                     uptodate_list+=("$label ($branch)")
                 elif git -C "$wt_path" merge-base --is-ancestor "$local_sha" "$remote_sha"; then
-                    echo "  [ff] $branch → $upstream"
+                    echo "  ${_CT_OK}[ff]${_CT_RESET} ${_CT_REF}$branch${_CT_RESET} → ${_CT_REF}$upstream${_CT_RESET}"
+                    _wt_sync_meta "branch"   "${_CT_REF}${branch}${_CT_RESET}"
+                    _wt_sync_meta "upstream" "${_CT_REF}${upstream}${_CT_RESET}"
+                    _wt_sync_meta "local"    "${_CT_SHA}${local_short}${_CT_RESET} → ${_CT_SHA}${remote_short}${_CT_RESET} ${_CT_PATH}(behind ${_CT_WARN}${n_behind}${_CT_PATH})${_CT_RESET}"
                     local merge_output merge_rc
-                    merge_output=$(git -C "$wt_path" merge --ff-only "$upstream" 2>&1)
+                    merge_output=$(_capture_with_color git -C "$wt_path" merge --ff-only "$upstream")
                     merge_rc=$?
-                    [[ -n "$merge_output" ]] && printf '%s\n' "$merge_output" | _print_trimmed 5 5 "    "
+                    [[ -n "$merge_output" ]] && printf '%s\n' "$merge_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
                     if (( merge_rc != 0 )); then
-                        echo "  [ff] failed (rc=$merge_rc); aborting wt sync" >&2
+                        echo "  ${_CT_BAD}[ff] failed (rc=$merge_rc); aborting wt sync${_CT_RESET}" >&2
                         return 1
                     fi
                     ff_list+=("$label ($branch)")
                 elif git -C "$wt_path" merge-base --is-ancestor "$remote_sha" "$local_sha"; then
-                    echo "  [ahead] $branch ahead of $upstream (unpushed commits)"
+                    echo "  ${_CT_WARN}[ahead]${_CT_RESET} ${_CT_REF}$branch${_CT_RESET} ahead of ${_CT_REF}$upstream${_CT_RESET} ${_CT_PATH}(unpushed commits)${_CT_RESET}"
+                    _wt_sync_meta "branch"   "${_CT_REF}${branch}${_CT_RESET}"
+                    _wt_sync_meta "upstream" "${_CT_REF}${upstream}${_CT_RESET}"
+                    _wt_sync_meta "local"    "${_CT_SHA}${local_short}${_CT_RESET} ${_CT_PATH}(ahead ${_CT_WARN}${n_ahead}${_CT_PATH})${_CT_RESET}"
+                    _wt_sync_meta "remote"   "${_CT_SHA}${remote_short}${_CT_RESET}"
                     ahead_list+=("$label ($branch)")
                 else
-                    echo "  [diverged] $branch diverged from $upstream"
+                    echo "  ${_CT_BAD}[diverged]${_CT_RESET} ${_CT_REF}$branch${_CT_RESET} ⇄ ${_CT_REF}$upstream${_CT_RESET}"
+                    _wt_sync_meta "branch"   "${_CT_REF}${branch}${_CT_RESET}"
+                    _wt_sync_meta "upstream" "${_CT_REF}${upstream}${_CT_RESET}"
+                    _wt_sync_meta "local"    "${_CT_SHA}${local_short}${_CT_RESET} ${_CT_PATH}(ahead ${_CT_WARN}${n_ahead}${_CT_PATH})${_CT_RESET}"
+                    _wt_sync_meta "remote"   "${_CT_SHA}${remote_short}${_CT_RESET} ${_CT_PATH}(behind ${_CT_BAD}${n_behind}${_CT_PATH})${_CT_RESET}"
                     diverged_list+=("$label ($branch)")
                 fi
             done
+            unset -f _wt_sync_meta
             echo
-            echo "Done."
+            echo "${_CT_DONE}Done.${_CT_RESET}"
             # Grouped summary: one block per non-empty category. Categories
             # with zero members are omitted entirely so the summary scales
-            # with what actually happened.
+            # with what actually happened. Category color matches the
+            # per-worktree status color used above so eyes can group
+            # by hue.
             local _summary_indent="             > "
             _wt_sync_summary_block() {
-                local title="$1"; shift
+                local title="$1" color="$2"; shift 2
                 (( $# == 0 )) && return
                 echo
-                echo "***** ${title}=$#"
+                echo "${color}***** ${title}=${#}${_CT_RESET}"
                 local item
                 for item in "$@"; do
-                    echo "${_summary_indent}${item}"
+                    echo "${_CT_PATH}${_summary_indent}${_CT_RESET}${item}"
                 done
             }
-            _wt_sync_summary_block "ff"           "${ff_list[@]}"
-            _wt_sync_summary_block "up-to-date"   "${uptodate_list[@]}"
-            _wt_sync_summary_block "ahead"        "${ahead_list[@]}"
-            _wt_sync_summary_block "diverged"     "${diverged_list[@]}"
-            _wt_sync_summary_block "no-upstream"  "${no_upstream_list[@]}"
-            _wt_sync_summary_block "detached"     "${detached_list[@]}"
-            _wt_sync_summary_block "dirty"        "${dirty_list[@]}"
+            _wt_sync_summary_block "ff"           "$_CT_OK"   "${ff_list[@]}"
+            _wt_sync_summary_block "up-to-date"   "$_CT_OK"   "${uptodate_list[@]}"
+            _wt_sync_summary_block "ahead"        "$_CT_WARN" "${ahead_list[@]}"
+            _wt_sync_summary_block "diverged"     "$_CT_BAD"  "${diverged_list[@]}"
+            _wt_sync_summary_block "no-upstream"  "$_CT_WARN" "${no_upstream_list[@]}"
+            _wt_sync_summary_block "detached"     "$_CT_BAD"  "${detached_list[@]}"
+            _wt_sync_summary_block "dirty"        "$_CT_BAD"  "${dirty_list[@]}"
             unset -f _wt_sync_summary_block
             ;;
         merge)
@@ -1013,19 +1306,19 @@ SYNCHELP
                     --into=*)
                         into_name="${1#--into=}"; shift ;;
                     -h|--help)
-                        echo "Usage: wt merge <branch> [--into <worktree>]"; return 0 ;;
+                        echo "${_CT_INFO}Usage:${_CT_RESET} wt merge <branch> [--into <worktree>]"; return 0 ;;
                     *)
                         if [[ -z "$branch" ]]; then
                             branch="$1"
                         else
-                            echo "wt merge: unexpected arg: $1" >&2
+                            echo "${_CT_BAD}wt merge:${_CT_RESET} unexpected arg: $1" >&2
                             return 1
                         fi
                         shift ;;
                 esac
             done
             if [[ -z "$branch" ]]; then
-                echo "Usage: wt merge <branch> [--into <worktree>]"
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt merge <branch> [--into <worktree>]"
                 return 1
             fi
             if [[ -n "$into_name" ]]; then
@@ -1034,19 +1327,19 @@ SYNCHELP
                 else
                     target_path="$WT_DIR/$into_name"
                 fi
-                [[ -d "$target_path" ]] || { echo "Error: no worktree at $target_path"; return 1; }
+                [[ -d "$target_path" ]] || { echo "${_CT_BAD}Error:${_CT_RESET} no worktree at $target_path"; return 1; }
             else
                 target_path=$(git rev-parse --show-toplevel 2>/dev/null)
                 if [[ -z "$target_path" ]]; then
-                    echo "wt merge: cwd is not inside a git worktree (use --into <name>)" >&2
+                    echo "${_CT_BAD}wt merge:${_CT_RESET} cwd is not inside a git worktree (use --into <name>)" >&2
                     return 1
                 fi
             fi
             if [[ -n "$(git -C "$target_path" status --porcelain 2>/dev/null)" ]]; then
-                echo "Error: target worktree is dirty: $target_path" >&2
+                echo "${_CT_BAD}Error:${_CT_RESET} target worktree is dirty: $target_path" >&2
                 return 1
             fi
-            echo "fetch: origin in $target_path"
+            echo "${_CT_PHASE}fetch:${_CT_RESET} origin in $target_path"
             git -C "$target_path" fetch origin --prune || return 1
             local source
             source=$(_git_resolve_ref "$branch" "origin" "$target_path") || return 1
@@ -1059,7 +1352,7 @@ SYNCHELP
             esac
             local target_branch
             target_branch=$(__wt_branch "$target_path")
-            echo "merge: $ref ($source) → $target_path (${target_branch:-detached})"
+            echo "${_CT_PHASE}merge:${_CT_RESET} $ref ($source) → $target_path (${target_branch:-detached})"
             git -C "$target_path" merge "$ref"
             ;;
         *)
@@ -1090,7 +1383,7 @@ cd-wt() {
     local WT_DIR="$HOME/worktrees"
     local MAIN_REPO="${MAIN_REPO:-$HOME}"
     if ! git -C "$MAIN_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "cd-wt: \$MAIN_REPO ($MAIN_REPO) is not a git repository. Set MAIN_REPO to your main repo path." >&2
+        echo "${_CT_BAD}cd-wt:${_CT_RESET} \$MAIN_REPO ($MAIN_REPO) is not a git repository. Set MAIN_REPO to your main repo path." >&2
         return 1
     fi
     local target="$1"
@@ -1121,7 +1414,7 @@ cd-wt() {
         return 0
     fi
 
-    echo "Error: no worktree matching '$target'"
+    echo "${_CT_BAD}Error:${_CT_RESET} no worktree matching '$target'"
     return 1
 }
 
@@ -1129,7 +1422,7 @@ cd-wt() {
 # alias tmux-new='tmux new -A -s'
 tmux-new(){
 	if [ -z "$1" ]; then
-		echo "Error: session name cannot be empty"
+		echo "${_CT_BAD}Error:${_CT_RESET} session name cannot be empty"
 		return 1
 	fi
 
@@ -1138,8 +1431,8 @@ tmux-new(){
 }
 
 tmux-reset(){
-	echo "Resetting tmux..."
-	echo "Existing session(s):"
+	echo "${_CT_PHASE}Resetting tmux...${_CT_RESET}"
+	echo "${_CT_HDR}Existing session(s):${_CT_RESET}"
 	if [ -z "$1" ]; then
 		tmux ls
 		tmux kill-server
@@ -1151,15 +1444,15 @@ tmux-reset(){
 	tmux ls | grep $session_name
 	tmux kill-session -t $session_name
 
-	echo "Create new session:"
+	echo "${_CT_HDR}Create new session:${_CT_RESET}"
 	tmux new-session -d -s $session_name
 	tmux send-keys -t $session_name:0.0 C-z "${TMUX_RESET_CMD:-clear}" Enter
-	tmux ls | grep $session_name	
+	tmux ls | grep $session_name
 
 	if [ -z "$1" ]; then
-		tmux ls	
-		sleep 10	
-		echo "Killing temp test_session..."
+		tmux ls
+		sleep 10
+		echo "${_CT_WARN}Killing temp test_session...${_CT_RESET}"
 		tmux kill-session -t $session_name
 		tmux ls
 	fi
@@ -1171,24 +1464,24 @@ tmux-reset(){
 # shell otherwise. After it returns, start fresh with `tmux` or `tmux-new`.
 tmux-refresh() {
     if [ -n "$TMUX" ]; then
-        echo "tmux-refresh: detach first (prefix + d), then re-run from a plain shell." >&2
+        echo "${_CT_BAD}tmux-refresh:${_CT_RESET} detach first (prefix + d), then re-run from a plain shell." >&2
         return 1
     fi
     local tpm_bin="$HOME/.tmux/plugins/tpm/bin"
     if [ ! -x "$tpm_bin/install_plugins" ]; then
-        echo "tmux-refresh: TPM not installed at $tpm_bin." >&2
-        echo "  Run ~/dotfiles/bootstrap.sh first." >&2
+        echo "${_CT_BAD}tmux-refresh:${_CT_RESET} TPM not installed at ${_CT_PATH}$tpm_bin${_CT_RESET}." >&2
+        echo "  Run ${_CT_PATH}~/dotfiles/bootstrap.sh${_CT_RESET} first." >&2
         return 1
     fi
     if tmux info >/dev/null 2>&1; then
-        echo "Killing tmux server..."
+        echo "${_CT_WARN}Killing tmux server...${_CT_RESET}"
         tmux kill-server
     fi
-    echo "Installing missing plugins..."
+    echo "${_CT_PHASE}Installing missing plugins...${_CT_RESET}"
     "$tpm_bin/install_plugins" || return 1
-    echo "Updating all plugins..."
+    echo "${_CT_PHASE}Updating all plugins...${_CT_RESET}"
     "$tpm_bin/update_plugins" all || return 1
-    echo "Done. Start tmux with 'tmux' or 'tmux-new <name>'."
+    echo "${_CT_DONE}Done.${_CT_RESET} Start tmux with 'tmux' or 'tmux-new <name>'."
 }
 
 
@@ -1218,7 +1511,7 @@ tmux-send-all() {
     # Idle: only send to panes at a zsh prompt (skips Claude, vim, running commands)
     if [ "$1" = "--idle" ]; then
         shift
-        [[ $# -eq 0 ]] && { echo "Error: command cannot be empty"; return 1; }
+        [[ $# -eq 0 ]] && { echo "${_CT_BAD}Error:${_CT_RESET} command cannot be empty"; return 1; }
         local cmd="$*"
         tmux info >/dev/null 2>&1 || { echo "No tmux server/sessions found."; return 1; }
         tmux list-panes -a -F '#{pane_id} #{pane_current_command}' \
@@ -1231,7 +1524,7 @@ tmux-send-all() {
     fi
 
     if [ $# -eq 0 ]; then
-        echo "Error: command cannot be empty"
+        echo "${_CT_BAD}Error:${_CT_RESET} command cannot be empty"
         return 1
     fi
 
@@ -1250,7 +1543,7 @@ tmux-send-all() {
         echo "${ver}|${cmd}" > "$pending"
         # Run in the sending pane immediately and mark as served
         tmux set-option -p @deferred_version "$ver" 2>/dev/null
-        echo "[send-all] running: $cmd"
+        echo "${_CT_PHASE}[send-all]${_CT_RESET} running: ${_CT_PATH}$cmd${_CT_RESET}"
         eval "$cmd"
         # Send immediately to idle zsh panes, mark them as served
         tmux list-panes -a -F '#{pane_id} #{pane_current_command}' \
@@ -1277,9 +1570,9 @@ tmux-send-all() {
 p10k-branch-prompt-watcher() {
   local main_repo="${1:-${MAIN_REPO:-$HOME}}"
   local interval="${2:-30}"
-  main_repo="$(cd "$main_repo" && pwd -P)" || { echo "Error: bad path" >&2; return 1; }
+  main_repo="$(cd "$main_repo" && pwd -P)" || { echo "${_CT_BAD}Error:${_CT_RESET} bad path" >&2; return 1; }
   git -C "$main_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    || { echo "Error: not a git repo: $main_repo" >&2; return 1; }
+    || { echo "${_CT_BAD}Error:${_CT_RESET} not a git repo: $main_repo" >&2; return 1; }
 
   _pane_title "p10k-watcher"
   typeset -A branches
@@ -1292,12 +1585,12 @@ p10k-branch-prompt-watcher() {
   # Initialize state for all worktrees
   while IFS= read -r wt; do
     branches[$wt]="$(__branch_of "$wt")"
-    echo "[$(date +%H:%M:%S)] Watching $wt @ ${branches[$wt]}"
+    echo "${_CT_PATH}[$(date +%H:%M:%S)]${_CT_RESET} ${_CT_INFO}Watching${_CT_RESET} ${_CT_PATH}$wt${_CT_RESET} @ ${_CT_REF}${branches[$wt]}${_CT_RESET}"
   done < <(git -C "$main_repo" worktree list --porcelain | awk '/^worktree /{print $2}')
 
-  echo "[$(date +%H:%M:%S)] Watcher running (every ${interval}s). Ctrl-C to stop."
+  echo "${_CT_PATH}[$(date +%H:%M:%S)]${_CT_RESET} ${_CT_PHASE}Watcher running${_CT_RESET} (every ${interval}s). Ctrl-C to stop."
 
-  trap 'echo; echo "Watcher stopped."; return 0' INT
+  trap 'echo; echo "${_CT_BAD}Watcher stopped.${_CT_RESET}"; return 0' INT
   typeset -A seen
   while :; do
     sleep "$interval"
@@ -1308,9 +1601,9 @@ p10k-branch-prompt-watcher() {
       seen[$wt]=1
       cur="$(__branch_of "$wt")"
       if [[ -z "${branches[$wt]+set}" ]]; then
-        echo "[$(date +%H:%M:%S)] Watching $wt @ $cur (new)"
+        echo "${_CT_PATH}[$(date +%H:%M:%S)]${_CT_RESET} ${_CT_OK}Watching${_CT_RESET} ${_CT_PATH}$wt${_CT_RESET} @ ${_CT_REF}$cur${_CT_RESET} ${_CT_PATH}(new)${_CT_RESET}"
       elif [[ "$cur" != "${branches[$wt]}" ]]; then
-        echo "[$(date +%H:%M:%S)] $wt: ${branches[$wt]} -> $cur"
+        echo "${_CT_PATH}[$(date +%H:%M:%S)]${_CT_RESET} ${_CT_PATH}$wt${_CT_RESET}: ${_CT_REF}${branches[$wt]}${_CT_RESET} -> ${_CT_REF}$cur${_CT_RESET}"
         _refresh_panes_for_path "$wt"
       fi
       branches[$wt]="$cur"
@@ -1318,7 +1611,7 @@ p10k-branch-prompt-watcher() {
     # Drop entries for worktrees that disappeared since last cycle.
     for wt in ${(k)branches}; do
       if [[ -z "${seen[$wt]:-}" ]]; then
-        echo "[$(date +%H:%M:%S)] Stopped watching $wt (removed)"
+        echo "${_CT_PATH}[$(date +%H:%M:%S)]${_CT_RESET} ${_CT_WARN}Stopped watching${_CT_RESET} ${_CT_PATH}$wt${_CT_RESET} (removed)"
         unset "branches[$wt]"
       fi
     done
@@ -1333,13 +1626,13 @@ stop-p10k-branch-prompt-watcher() {
     local pid
     pid=$(< /tmp/p10k-branch-prompt-watcher.pid)
     if kill "$pid" >/dev/null 2>&1; then
-      echo "Stopped watcher (pid $pid)"
+      echo "${_CT_OK}Stopped watcher${_CT_RESET} (pid ${_CT_PATH}$pid${_CT_RESET})"
     else
-      echo "Watcher not running (stale pid file?)"
+      echo "${_CT_WARN}Watcher not running${_CT_RESET} (stale pid file?)"
     fi
     rm -f /tmp/p10k-branch-prompt-watcher.pid
   else
-    echo "No background watcher running. (Foreground watcher: use Ctrl-C)"
+    echo "${_CT_WARN}No background watcher running.${_CT_RESET} (Foreground watcher: use Ctrl-C)"
   fi
 }
 

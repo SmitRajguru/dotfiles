@@ -1485,6 +1485,26 @@ tmux-refresh() {
 }
 
 
+# Respawn the current tmux pane with a fresh shell. Heavier than `exec zsh`
+# (which inherits tty modes, fds, env, tmux pipe-pane state) — kills the
+# inferior process and starts a new one in the same pane. Layout, pane_id,
+# and pane history slot are preserved; pty state is reset by tmux.
+# Use when one terminal misbehaves (silent stdout, weird stty) but you
+# don't want to lose the pane layout.
+tmux-respawn() {
+    if [ -z "$TMUX" ]; then
+        echo "${_CT_BAD}tmux-respawn:${_CT_RESET} not inside tmux." >&2
+        return 1
+    fi
+    # Pass $SHELL explicitly: tmux-resurrect bakes
+    # `cat <pane_content_file>; exec <shell>` as the pane's start command,
+    # so `respawn-pane -k` without args re-runs that and prints a stale-file
+    # cat error when the saved content is gone.
+    # `-c "$PWD"` preserves the current directory across respawn.
+    tmux respawn-pane -k -c "$PWD" "${SHELL:-zsh}"
+}
+
+
 # Send a command to tmux sessions
 # Usage:
 #   tmux-send-all "echo hello"          # send to active pane of every session

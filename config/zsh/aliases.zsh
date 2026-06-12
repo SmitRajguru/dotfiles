@@ -36,8 +36,10 @@ elif [ -n "$ZSH_VERSION" ]; then
     return 0
   }
 
-  # Clear pane label when shell returns to prompt (prevents stale labels after command finishes)
-  _clear_pane_label() { [ -n "$TMUX" ] && tmux set-option -pu @pane_label 2>/dev/null; }
+  # Clear pane label when shell returns to prompt (prevents stale labels after command finishes).
+  # Set to empty (not -u): only a SET triggers a pane-border redraw — an unset leaves the border
+  # showing the last-drawn label. Empty string is falsey in the format, so it renders prefix-only.
+  _clear_pane_label() { [ -n "$TMUX" ] && tmux set-option -p @pane_label "" 2>/dev/null; }
   precmd_functions=(${precmd_functions:#_clear_pane_label} _clear_pane_label)
 
   # Auto-label pane with the command being run; cleared at next prompt by the hook above.
@@ -275,9 +277,9 @@ _pane_title() {
 pane-prefix() {
     [ -n "$TMUX" ] || { echo "${_CT_BAD}pane-prefix:${_CT_RESET} not inside tmux." >&2; return 1; }
     case "$1" in
-        "")          tmux show-option -pqv @pane_prefix ;;   # show current
-        -c|--clear)  tmux set-option -pu @pane_prefix ;;     # clear
-        *)           tmux set-option -p @pane_prefix "$1" ;; # set
+        "")          tmux show-option -pqv @pane_prefix ;;     # show current
+        -c|--clear)  tmux set-option -p @pane_prefix "" ;;     # clear (empty SET → redraws; -u wouldn't)
+        *)           tmux set-option -p @pane_prefix "$1" ;;   # set
     esac
 }
 

@@ -40,6 +40,11 @@ elif [ -n "$ZSH_VERSION" ]; then
   _clear_pane_label() { [ -n "$TMUX" ] && tmux set-option -pu @pane_label 2>/dev/null; }
   precmd_functions=(${precmd_functions:#_clear_pane_label} _clear_pane_label)
 
+  # Auto-label pane with the command being run; cleared at next prompt by the hook above.
+  # $1 is the command as typed; tmux truncates the border text to the pane width on render.
+  _set_pane_label_cmd() { [ -n "$TMUX" ] && tmux set-option -p @pane_label "$1" 2>/dev/null; }
+  preexec_functions=(${preexec_functions:#_set_pane_label_cmd} _set_pane_label_cmd)
+
   # Deferred command: busy panes auto-run the command on next prompt
   # File format: version|command (latest command wins)
   # Panes already served have @deferred_version set to the current version
@@ -263,6 +268,17 @@ _pane_title() {
         tmux select-pane -T "$1"
         tmux set-option -p @pane_label "$1"
     }
+}
+
+# Persistent pane prefix (tmux @pane_prefix). Border shows "<prefix>: <cmd>".
+# Survives across commands (the prompt hook only clears @pane_label, not this).
+pane-prefix() {
+    [ -n "$TMUX" ] || { echo "${_CT_BAD}pane-prefix:${_CT_RESET} not inside tmux." >&2; return 1; }
+    case "$1" in
+        "")          tmux show-option -pqv @pane_prefix ;;   # show current
+        -c|--clear)  tmux set-option -pu @pane_prefix ;;     # clear
+        *)           tmux set-option -p @pane_prefix "$1" ;; # set
+    esac
 }
 
 # Check if a process has a SIGUSR1 handler (bit 9 in /proc/PID/status SigCgt).
@@ -1396,10 +1412,12 @@ cd-wt() {
     # Match by main-repo basename or any worktree directory name
     if [[ "$target" == "$(basename "$MAIN_REPO")" || "$target" == "main" ]]; then
         cd "$MAIN_REPO"
+        [ -n "$TMUX" ] && tmux set-option -p @pane_prefix "${PWD:t}" 2>/dev/null
         return 0
     fi
     if [[ -d "$WT_DIR/$target" ]]; then
         cd "$WT_DIR/$target"
+        [ -n "$TMUX" ] && tmux set-option -p @pane_prefix "${PWD:t}" 2>/dev/null
         return 0
     fi
 
@@ -1411,6 +1429,7 @@ cd-wt() {
     ')
     if [[ -n "$wt_path" ]]; then
         cd "$wt_path"
+        [ -n "$TMUX" ] && tmux set-option -p @pane_prefix "${PWD:t}" 2>/dev/null
         return 0
     fi
 
@@ -1594,7 +1613,6 @@ p10k-branch-prompt-watcher() {
   git -C "$main_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || { echo "${_CT_BAD}Error:${_CT_RESET} not a git repo: $main_repo" >&2; return 1; }
 
-  _pane_title "p10k-watcher"
   typeset -A branches
 
   __branch_of() {
@@ -1681,6 +1699,7 @@ if [ -n "$ZSH_VERSION" ] && (( $+functions[compdef] )); then
     # stay here.
     zstyle ':completion:*:*:wt:*' menu select
     zstyle ':completion:*:*:cd-wt:*' menu select
+    zstyle ':completion:*:*:pane-prefix:*' menu select
     zstyle ':completion:*:*:tmux-new:*' menu select
     zstyle ':completion:*:*:tmux-reset:*' menu select
 

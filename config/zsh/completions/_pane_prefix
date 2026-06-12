@@ -1,0 +1,12 @@
+#compdef pane-prefix
+
+# pane-prefix completions: the clear flags. A bare arg is a free-form prefix
+# name (no completion). Lives on $fpath (prepended in $ZDOTDIR/.zshenv).
+
+local -a vals disp
+vals=(-c --clear)
+disp=(
+    "-c      -- Clear the pane prefix"
+    "--clear -- Clear the pane prefix"
+)
+compadd -l -d disp -a vals

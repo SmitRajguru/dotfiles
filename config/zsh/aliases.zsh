@@ -563,21 +563,58 @@ git-checkout-ref() {
 }
 
 # -------------------------------------------------------------------
+# ssh-agent key guard (shared by claude / git / wt).
+# Why: ssh-add hangs in non-interactive shells (Claude Code's Bash tool,
+# scripts, hooks) because the passphrase prompt has no stdin. So only prompt in
+# an interactive shell; elsewhere warn and let the caller proceed/fail as it
+# would have. Returns 0 if the agent already has a key (or one was just added).
+# -------------------------------------------------------------------
+_ensure_ssh_key() {
+    ssh-add -l >/dev/null 2>&1 && return 0
+    if [[ ! -o interactive ]]; then
+        print -u2 -- "${_CT_WARN}ssh-agent has no keys (non-interactive; run ssh-add from a terminal).${_CT_RESET}"
+        return 1
+    fi
+    print -u2 -- "${_CT_WARN}ssh-agent has no keys; running ssh-add first.${_CT_RESET}"
+    ssh-add
+}
+
+# -------------------------------------------------------------------
 # claude — wrapper that ensures ssh-agent has a key before launch.
-# Why: ssh-add inside Claude Code hangs (its Bash tool runs non-interactively,
-# so the passphrase prompt has no stdin). Catching an empty agent here, in
-# the interactive shell, lets ssh-add actually prompt for the passphrase.
 # Bypass with `command claude` if you really want to launch without keys.
 # -------------------------------------------------------------------
 claude() {
-    if ! ssh-add -l >/dev/null 2>&1; then
-        print -u2 -- "${_CT_WARN}ssh-agent has no keys; running ssh-add first.${_CT_RESET}"
-        if ! ssh-add; then
-            print -u2 -- "${_CT_BAD}ssh-add failed; not launching claude.${_CT_RESET}"
-            return 1
-        fi
+    if ! _ensure_ssh_key; then
+        print -u2 -- "${_CT_BAD}ssh-add failed; not launching claude.${_CT_RESET}"
+        return 1
     fi
     command claude "$@"
+}
+
+# -------------------------------------------------------------------
+# git — ensure an ssh key before NETWORK subcommands, interactive shells only.
+# Non-interactive git (Claude Code's Bash tool, scripts, hooks) and all local
+# subcommands (status/log/diff/...) pass straight through, so nothing ever
+# hangs on a passphrase prompt. The arg scan skips git's global options
+# (e.g. `git -C <path> fetch`) to find the real subcommand. Bypass: `command git`.
+# -------------------------------------------------------------------
+git() {
+    if [[ -o interactive ]]; then
+        local a sub="" skipnext=0
+        for a in "$@"; do
+            if (( skipnext )); then skipnext=0; continue; fi
+            case "$a" in
+                -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path)
+                    skipnext=1 ;;          # value is the next arg
+                -*) ;;                     # any other option (incl. --opt=value)
+                *)  sub="$a"; break ;;     # first non-option token is the subcommand
+            esac
+        done
+        case "$sub" in
+            fetch|pull|push|clone|remote|ls-remote|submodule) _ensure_ssh_key ;;
+        esac
+    fi
+    command git "$@"
 }
 
 # -------------------------------------------------------------------
@@ -614,6 +651,14 @@ wt() {
     fi
     local action="$1"
     shift 2>/dev/null
+
+    # Network subcommands hit a remote (fetch / hub sync), so ensure the
+    # ssh-agent has a key first — otherwise the fetch hangs on a passphrase
+    # prompt. The fetch runs via `unbuffer git`, which execs the git binary and
+    # bypasses the git() wrapper, so the guard has to live here too.
+    case "$action" in
+        sync|add|fork|merge) _ensure_ssh_key || return 1 ;;
+    esac
 
     # Helper: get branch name from a repo path
     __wt_branch() { git -C "$1" symbolic-ref --short HEAD 2>/dev/null; }

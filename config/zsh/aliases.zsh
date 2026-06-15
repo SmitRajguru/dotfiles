@@ -618,6 +618,28 @@ git() {
 }
 
 # -------------------------------------------------------------------
+# Dynamic named directories (zsh) for inline repo paths. Expand glued to a
+# trailing path, at command time, with no $() and no separate `REPO=...` step:
+#     bazel run //... -- --input_csv ~[repo]/experimental/foo/data.csv
+#   ~[repo]      -> current git worktree root (git rev-parse --show-toplevel)
+#   ~[repo-main] -> the main repo (MAIN_REPO, default $HOME)
+# Must be UNQUOTED — tilde expansion does not happen inside double quotes.
+# Fine for space-free paths (bazel targets, CSVs). Errors if not in a repo.
+# -------------------------------------------------------------------
+_zdn_repo() {
+    [[ "$1" == n ]] || return 1            # only handle name -> directory
+    local dir=""
+    case "$2" in
+        repo)      dir=$(git rev-parse --show-toplevel 2>/dev/null) ;;
+        repo-main) dir="${MAIN_REPO:-$HOME}" ;;
+        *)         return 1 ;;
+    esac
+    [[ -n "$dir" ]] || return 1
+    reply=("$dir")
+}
+zsh_directory_name_functions=(${zsh_directory_name_functions:#_zdn_repo} _zdn_repo)
+
+# -------------------------------------------------------------------
 # wt — Worktree management: push, pull, swap, fork, add, rm, sync, merge, clean, prune
 #   wt push <worktree> [switch-to]          Current branch → worktree, main → [switch-to] (default: master)
 #   wt pull <worktree>                      Worktree branch → main dir, remove worktree

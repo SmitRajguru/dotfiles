@@ -627,15 +627,21 @@ git() {
 # Fine for space-free paths (bazel targets, CSVs). Errors if not in a repo.
 # -------------------------------------------------------------------
 _zdn_repo() {
-    [[ "$1" == n ]] || return 1            # only handle name -> directory
-    local dir=""
-    case "$2" in
-        repo)      dir=$(git rev-parse --show-toplevel 2>/dev/null) ;;
-        repo-main) dir="${MAIN_REPO:-$HOME}" ;;
-        *)         return 1 ;;
+    case "$1" in
+        n)  # name -> directory
+            local dir=""
+            case "$2" in
+                repo)      dir=$(git rev-parse --show-toplevel 2>/dev/null) ;;
+                repo-main) dir="${MAIN_REPO:-$HOME}" ;;
+                *)         return 1 ;;
+            esac
+            [[ -n "$dir" ]] || return 1
+            reply=("$dir") ;;
+        c)  # completion of the name after ~[
+            local expl
+            _wanted dynamic-dirs expl 'repo directory' compadd repo repo-main ;;
+        *)  return 1 ;;
     esac
-    [[ -n "$dir" ]] || return 1
-    reply=("$dir")
 }
 zsh_directory_name_functions=(${zsh_directory_name_functions:#_zdn_repo} _zdn_repo)
 

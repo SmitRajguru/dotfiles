@@ -1469,6 +1469,35 @@ USAGE
     esac
 }
 
+# Completion helper (shared by _cd_wt and _wt): populate the caller's `vals`
+# and `disp` arrays with one entry per worktree — value = worktree name,
+# display = "name  -- branch" — so every worktree listing looks the same and
+# shows a single permutation. Relies on zsh dynamic scoping: the caller must
+# declare `local -a vals disp` before calling. Pass --linked to exclude the
+# main repo (MAIN_REPO); default includes it (as its basename).
+_wt_worktree_compdata() {
+    local include_main=1
+    [[ "$1" == --linked ]] && include_main=0
+    local repo="${MAIN_REPO:-$HOME}"
+    local wt_path="" wt_branch="" wt_name=""
+    while IFS= read -r line; do
+        if [[ "$line" == worktree\ * ]]; then
+            wt_path="${line#worktree }"
+        elif [[ "$line" == branch\ refs/heads/* ]]; then
+            wt_branch="${line#branch refs/heads/}"
+        elif [[ -z "$line" && -n "$wt_path" ]]; then
+            if [[ "$wt_path" == "$repo" ]]; then
+                wt_name=$(basename "$repo")
+                (( include_main )) && { vals+=("$wt_name"); disp+=("$wt_name  -- ${wt_branch:-detached}"); }
+            else
+                wt_name="${wt_path##*/}"
+                vals+=("$wt_name"); disp+=("$wt_name  -- ${wt_branch:-detached}")
+            fi
+            wt_path="" wt_branch="" wt_name=""
+        fi
+    done < <(git -C "$repo" worktree list --porcelain 2>/dev/null; echo)
+}
+
 # cd-wt — Quick cd to a worktree by directory name or branch name
 cd-wt() {
     local WT_DIR="$HOME/worktrees"

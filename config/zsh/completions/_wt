@@ -28,9 +28,9 @@ fi
 case "${words[2]}" in
     pull|swap|rm|remove)
         if (( CURRENT == 3 )); then
-            local -a wts
-            wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
-            compadd -a wts
+            local -a vals disp
+            _wt_worktree_compdata --linked
+            compadd -l -d disp -a vals
         fi
         ;;
     push)
@@ -52,10 +52,9 @@ case "${words[2]}" in
         # pos 4+ either `--into` literal or wt name when --into precedes it.
         case "${words[CURRENT-1]}" in
             --into)
-                local -a wts
-                wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
-                wts+=("$(basename "${MAIN_REPO:-$HOME}")")
-                compadd -a wts
+                local -a vals disp
+                _wt_worktree_compdata
+                compadd -l -d disp -a vals
                 return
                 ;;
         esac
@@ -71,10 +70,9 @@ case "${words[2]}" in
         # `wt clean [--into <wt>] [-x] [-y]` — flags only; --into takes a wt name.
         case "${words[CURRENT-1]}" in
             --into)
-                local -a wts
-                wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
-                wts+=("$(basename "${MAIN_REPO:-$HOME}")")
-                compadd -a wts
+                local -a vals disp
+                _wt_worktree_compdata
+                compadd -l -d disp -a vals
                 return
                 ;;
         esac
@@ -104,19 +102,18 @@ case "${words[2]}" in
         # --into completes worktree names. --name takes no completion.
         case "${words[CURRENT-1]}" in
             --from)
-                local -a wts branches refs
-                wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
-                wts+=("$(basename "${MAIN_REPO:-$HOME}")")
+                # worktrees (name -- branch) + branch names (tags/SHAs typed manually)
+                local -a vals disp branches
+                _wt_worktree_compdata
                 branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
-                refs=("${wts[@]}" "${branches[@]}")
-                compadd -a refs
+                compadd -l -d disp -a vals
+                compadd -a branches
                 return
                 ;;
             --into)
-                local -a wts
-                wts=(${(@f)"$(ls -1 "$HOME/worktrees" 2>/dev/null)"})
-                wts+=("$(basename "${MAIN_REPO:-$HOME}")")
-                compadd -a wts
+                local -a vals disp
+                _wt_worktree_compdata
+                compadd -l -d disp -a vals
                 return
                 ;;
             --name)

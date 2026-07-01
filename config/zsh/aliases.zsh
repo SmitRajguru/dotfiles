@@ -23,6 +23,12 @@ elif [ -n "$ZSH_VERSION" ]; then
   setopt HIST_IGNORE_SPACE
   setopt TRAPS_ASYNC  # deliver signals during ZLE so TRAPUSR1 fires at the prompt
 
+  # Option+Left/Right word-jump. Alt-f/Alt-b are word-nav by default in the
+  # emacs keymap; Option+arrow is not, so bind the sequences the terminal sends
+  # (captured: iTerm2 "Left Option = Esc+" -> modifier-encoded \e[1;3D / \e[1;3C).
+  bindkey '\e[1;3D' backward-word   # Option+Left
+  bindkey '\e[1;3C' forward-word    # Option+Right
+
   # Signal handler for non-disruptive p10k prompt refresh.
   # With TRAPS_ASYNC, this fires immediately during ZLE (not deferred to next Enter).
   # Must re-run precmd hooks so p10k re-queries gitstatus (zle .reset-prompt alone

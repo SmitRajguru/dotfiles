@@ -354,10 +354,10 @@ step_oh_my_zsh() {
     return 0
   fi
   if [ -d "$omz" ]; then
-    local bak
-    bak="$omz.bak.$(date +%Y%m%d%H%M%S)"
-    echo "Incomplete oh-my-zsh at $omz (no oh-my-zsh.sh) — moving to $bak"
-    mv "$omz" "$bak"
+    # Safe to delete: a half-installed dir only ever holds the plugin/theme
+    # clones from later steps, which re-clone into the fresh custom/.
+    echo "Incomplete oh-my-zsh at $omz (no oh-my-zsh.sh) — removing"
+    rm -rf "$omz"
   fi
   # Plain clone instead of the upstream installer: the installer's other jobs
   # (.zshrc template, chsh) are handled by setup.sh symlinks and step 4, and

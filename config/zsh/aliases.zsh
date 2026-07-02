@@ -578,11 +578,54 @@ git-checkout-ref() {
 _ensure_ssh_key() {
     ssh-add -l >/dev/null 2>&1 && return 0
     if [[ ! -o interactive ]]; then
-        print -u2 -- "${_CT_WARN}ssh-agent has no keys (non-interactive; run ssh-add from a terminal).${_CT_RESET}"
+        print -u2 -- "${_CT_WARN}ssh-agent has no keys (non-interactive; run ssh-setup from a terminal).${_CT_RESET}"
         return 1
     fi
     print -u2 -- "${_CT_WARN}ssh-agent has no keys; running ssh-add first.${_CT_RESET}"
     ssh-add
+}
+
+# -------------------------------------------------------------------
+# ssh-setup [key-path ...] — one-shot agent + key bootstrap (post-reboot).
+# Revives the persistent agent if the cached socket is dead (same logic as
+# $ZDOTDIR/.zshenv, whose helper is unset after sourcing), then loads keys:
+# no args = plain `ssh-add` (default identities), args = those key files.
+# Interactive only — the passphrase prompt hangs without a tty.
+# -------------------------------------------------------------------
+ssh-setup() {
+    setopt local_options no_xtrace no_verbose typeset_silent
+    if [[ ! -o interactive ]]; then
+        print -u2 -- "${_CT_WARN}ssh-setup needs an interactive shell (passphrase prompt).${_CT_RESET}"
+        return 1
+    fi
+    local env_file="$HOME/.ssh/agent-environment"
+    _ssh_setup_alive() {
+        [[ -n "$SSH_AUTH_SOCK" && -S "$SSH_AUTH_SOCK" ]] || return 1
+        ssh-add -l &>/dev/null
+        local ec=$?
+        [[ $ec -eq 0 || $ec -eq 1 ]]
+    }
+    if ! _ssh_setup_alive && [[ -r "$env_file" ]]; then
+        source "$env_file" >/dev/null
+    fi
+    if ! _ssh_setup_alive; then
+        print -- "${_CT_PHASE}Starting fresh ssh-agent${_CT_RESET} (${_CT_PATH}${env_file}${_CT_RESET})"
+        ssh-agent -s >| "$env_file"
+        chmod 600 "$env_file"
+        source "$env_file" >/dev/null
+    fi
+    unset -f _ssh_setup_alive
+    local k bad=0
+    for k in "$@"; do
+        if [[ ! -r "$k" ]]; then
+            print -u2 -- "${_CT_BAD}Error:${_CT_RESET} no such key file: ${_CT_PATH}${k}${_CT_RESET}"
+            bad=1
+        fi
+    done
+    (( bad )) && return 1
+    ssh-add "$@" || return 1
+    print -- "${_CT_DONE}Agent keys:${_CT_RESET}"
+    ssh-add -l
 }
 
 # -------------------------------------------------------------------
@@ -1801,6 +1844,7 @@ if [ -n "$ZSH_VERSION" ] && (( $+functions[compdef] )); then
     zstyle ':completion:*:*:pane-prefix:*' menu select
     zstyle ':completion:*:*:tmux-new:*' menu select
     zstyle ':completion:*:*:tmux-reset:*' menu select
+    zstyle ':completion:*:*:ssh-setup:*' menu select
 
 elif [ -n "$BASH_VERSION" ]; then
     _wt_completion() {

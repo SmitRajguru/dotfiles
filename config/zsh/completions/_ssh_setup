@@ -1,0 +1,10 @@
+#compdef ssh-setup
+# Private keys in ~/.ssh (files with a matching .pub sibling), plus plain
+# file completion for keys living elsewhere.
+local -a keys
+local pub
+for pub in "$HOME"/.ssh/*.pub(N); do
+    keys+=("${pub%.pub}")
+done
+(( ${#keys} )) && compadd -f -a keys
+_files

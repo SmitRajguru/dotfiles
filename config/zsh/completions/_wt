@@ -7,8 +7,9 @@
 
 if (( CURRENT == 2 )); then
     local -a vals disp
-    vals=(push pull swap fork add rm sync merge clean prune list)
+    vals=(cd push pull swap fork add rm sync merge clean prune list)
     disp=(
+        "cd     -- Jump to a worktree by name or branch (no arg → list)"
         "push   -- Current branch → worktree, main → switch-to"
         "pull   -- Worktree branch → main dir"
         "swap   -- Swap main dir branch ↔ worktree"
@@ -31,6 +32,16 @@ case "${words[2]}" in
             local -a vals disp
             _wt_worktree_compdata --linked
             compadd -l -d disp -a vals
+        fi
+        ;;
+    cd|goto)
+        # Jump target: any worktree (incl. main repo) plus checked-out branch names.
+        if (( CURRENT == 3 )); then
+            local -a vals disp branches
+            _wt_worktree_compdata
+            branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch --format='%(refname:short)' 2>/dev/null)"})
+            compadd -l -d disp -a vals
+            compadd -a branches
         fi
         ;;
     push)

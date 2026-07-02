@@ -1,9 +1,0 @@
-#compdef cd-wt
-
-# cd-wt completions: one entry per worktree — value = worktree dir name,
-# display = "name  -- branch". Lives on $fpath (prepended in $ZDOTDIR/.zshenv).
-# _wt_worktree_compdata is defined in aliases.zsh (always sourced interactively).
-
-local -a vals disp
-_wt_worktree_compdata
-compadd -l -d disp -a vals

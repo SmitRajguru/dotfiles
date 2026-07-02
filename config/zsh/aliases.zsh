@@ -703,6 +703,32 @@ wt() {
     }
 
     case "$action" in
+        cd|goto)
+            # Jump to a worktree by its directory name, "main"/main-repo
+            # basename, or a checked-out branch name. cd persists because wt()
+            # runs in the calling shell. No arg -> list. (Folded in from the
+            # old standalone cd-wt.)
+            local target="$1" dest=""
+            if [[ -z "$target" ]]; then
+                git -C "$MAIN_REPO" worktree list
+                return 0
+            fi
+            if [[ "$target" == "main" || "$target" == "$(basename "$MAIN_REPO")" ]]; then
+                dest="$MAIN_REPO"
+            elif [[ -d "$WT_DIR/$target" ]]; then
+                dest="$WT_DIR/$target"
+            else
+                dest=$(git -C "$MAIN_REPO" worktree list --porcelain | awk -v b="$target" '
+                    /^worktree /{p=$2}
+                    /^branch refs\/heads\//{sub("refs/heads/","",$2); if($2==b) print p}')
+            fi
+            if [[ -z "$dest" ]]; then
+                echo "${_CT_BAD}Error:${_CT_RESET} no worktree matching '$target'" >&2
+                return 1
+            fi
+            cd "$dest" || return 1
+            [[ -n "$TMUX" ]] && tmux set-option -p @pane_prefix "${PWD:t}" 2>/dev/null
+            ;;
         push)
             local wt_name="$1" fallback="${2:-master}"
             if [[ -z "$wt_name" ]]; then
@@ -1482,7 +1508,7 @@ USAGE
     esac
 }
 
-# Completion helper (shared by _cd_wt and _wt): populate the caller's `vals`
+# Completion helper (used by _wt): populate the caller's `vals`
 # and `disp` arrays with one entry per worktree — value = worktree name,
 # display = "name  -- branch" — so every worktree listing looks the same and
 # shows a single permutation. Relies on zsh dynamic scoping: the caller must
@@ -1509,49 +1535,6 @@ _wt_worktree_compdata() {
             wt_path="" wt_branch="" wt_name=""
         fi
     done < <(git -C "$repo" worktree list --porcelain 2>/dev/null; echo)
-}
-
-# cd-wt — Quick cd to a worktree by directory name or branch name
-cd-wt() {
-    local WT_DIR="$HOME/worktrees"
-    local MAIN_REPO="${MAIN_REPO:-$HOME}"
-    if ! git -C "$MAIN_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "${_CT_BAD}cd-wt:${_CT_RESET} \$MAIN_REPO ($MAIN_REPO) is not a git repository. Set MAIN_REPO to your main repo path." >&2
-        return 1
-    fi
-    local target="$1"
-
-    if [[ -z "$target" ]]; then
-        git -C "$MAIN_REPO" worktree list
-        return 0
-    fi
-
-    # Match by main-repo basename or any worktree directory name
-    if [[ "$target" == "$(basename "$MAIN_REPO")" || "$target" == "main" ]]; then
-        cd "$MAIN_REPO"
-        [ -n "$TMUX" ] && tmux set-option -p @pane_prefix "${PWD:t}" 2>/dev/null
-        return 0
-    fi
-    if [[ -d "$WT_DIR/$target" ]]; then
-        cd "$WT_DIR/$target"
-        [ -n "$TMUX" ] && tmux set-option -p @pane_prefix "${PWD:t}" 2>/dev/null
-        return 0
-    fi
-
-    # Match by branch name — find the worktree that has this branch checked out
-    local wt_path
-    wt_path=$(git -C "$MAIN_REPO" worktree list --porcelain | awk -v branch="$target" '
-        /^worktree /{path=$2}
-        /^branch refs\/heads\//{sub("refs/heads/","",$2); if($2==branch) print path}
-    ')
-    if [[ -n "$wt_path" ]]; then
-        cd "$wt_path"
-        [ -n "$TMUX" ] && tmux set-option -p @pane_prefix "${PWD:t}" 2>/dev/null
-        return 0
-    fi
-
-    echo "${_CT_BAD}Error:${_CT_RESET} no worktree matching '$target'"
-    return 1
 }
 
 # tmux
@@ -1808,14 +1791,13 @@ alias netcheck='cls; netstat -tulpn'
 # Tab completions
 # -------------------------------------------------------------------
 if [ -n "$ZSH_VERSION" ] && (( $+functions[compdef] )); then
-    # Completion functions for wt / cd-wt / tmux-new / tmux-reset live as
+    # Completion functions for wt / tmux-new / tmux-reset live as
     # autoload #compdef files under $ZDOTDIR/completions/ (prepended to fpath
     # in $ZDOTDIR/.zshenv). compinit picks them up automatically and rebuilds
     # _comps from fpath, so any number of later-sourced rc files calling
     # compinit again can't drop these bindings. Only the menu-select zstyles
     # stay here.
     zstyle ':completion:*:*:wt:*' menu select
-    zstyle ':completion:*:*:cd-wt:*' menu select
     zstyle ':completion:*:*:pane-prefix:*' menu select
     zstyle ':completion:*:*:tmux-new:*' menu select
     zstyle ':completion:*:*:tmux-reset:*' menu select
@@ -1825,13 +1807,21 @@ elif [ -n "$BASH_VERSION" ]; then
         local cur="${COMP_WORDS[COMP_CWORD]}"
         local subcmd="${COMP_WORDS[1]}"
         if (( COMP_CWORD == 1 )); then
-            COMPREPLY=($(compgen -W "push pull swap add rm list" -- "$cur"))
+            COMPREPLY=($(compgen -W "cd push pull swap add rm list" -- "$cur"))
             return
         fi
         case "$subcmd" in
             pull|swap|rm|remove)
                 if (( COMP_CWORD == 2 )); then
                     COMPREPLY=($(compgen -W "$(ls -1 "$HOME/worktrees" 2>/dev/null)" -- "$cur"))
+                fi
+                ;;
+            cd|goto)
+                if (( COMP_CWORD == 2 )); then
+                    local MAIN_REPO="${MAIN_REPO:-$HOME}"
+                    local words="$(basename "$MAIN_REPO") $(ls -1 "$HOME/worktrees" 2>/dev/null)"
+                    words="$words $(git -C "$MAIN_REPO" worktree list --porcelain 2>/dev/null | awk '/^branch refs\/heads\//{sub("refs/heads/","",$2); print $2}')"
+                    COMPREPLY=($(compgen -W "$words" -- "$cur"))
                 fi
                 ;;
             push)
@@ -1847,16 +1837,6 @@ elif [ -n "$BASH_VERSION" ]; then
         esac
     }
     complete -F _wt_completion wt
-
-    _cd_wt_completion() {
-        local cur="${COMP_WORDS[COMP_CWORD]}"
-        local MAIN_REPO="${MAIN_REPO:-$HOME}"
-        local words="$(basename "$MAIN_REPO")"
-        [[ -d "$HOME/worktrees" ]] && words="$words $(ls -1 "$HOME/worktrees" 2>/dev/null)"
-        words="$words $(git -C "$MAIN_REPO" worktree list --porcelain 2>/dev/null | awk '/^branch refs\/heads\//{sub("refs/heads/","",$2); print $2}')"
-        COMPREPLY=($(compgen -W "$words" -- "$cur"))
-    }
-    complete -F _cd_wt_completion cd-wt
 
     _tmux_session_completion() {
         local cur="${COMP_WORDS[COMP_CWORD]}"

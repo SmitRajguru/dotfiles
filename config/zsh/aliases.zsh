@@ -659,7 +659,7 @@ zsh_directory_name_functions=(${zsh_directory_name_functions:#_zdn_repo} _zdn_re
 #   wt fork --from <ref> --name <branch> [--into <wt>]
 #                                           Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
 #   wt add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
-#   wt rm [-f] <worktree>                   Remove worktree (-f to force when dirty); auto-purges its bazel cache
+#   wt rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt); auto-purges its bazel cache
 #   wt sync                                 Fetch origin once + `hub sync` in MAIN_REPO, fast-forward each worktree's branch to its upstream
 #   wt merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
 #   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
@@ -917,8 +917,15 @@ FORKHELP
             echo "${_CT_PHASE}rm:${_CT_RESET} removing ~/worktrees/$wt_name (${target_branch:-detached})"
             if (( force )); then
                 git -C "$MAIN_REPO" worktree remove --force "$wt_path" || return 1
-            else
-                git -C "$MAIN_REPO" worktree remove "$wt_path" || return 1
+            elif ! git -C "$MAIN_REPO" worktree remove "$wt_path"; then
+                # Plain remove refuses a dirty worktree (modified/untracked files).
+                # Offer to force interactively; non-interactive callers just fail.
+                [[ -o interactive ]] || return 1
+                local ans
+                printf "${_CT_PROMPT}Worktree is dirty. Force remove (discards changes)?${_CT_RESET} [y/N]: " >&2
+                read -r ans
+                [[ "$ans" == [yY]* ]] || { echo "${_CT_BAD}Aborted.${_CT_RESET}" >&2; return 1; }
+                git -C "$MAIN_REPO" worktree remove --force "$wt_path" || return 1
             fi
             # Offer to remove fetch refspecs that were covering the removed
             # worktree's branch. Useful when an exact per-branch refspec was
@@ -1463,7 +1470,7 @@ Commands:
   fork --from <ref> --name <branch> [--into <wt>]
                                        Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
   add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
-  rm [-f] <worktree>                   Remove worktree (-f to force when dirty); auto-purges its bazel cache
+  rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt); auto-purges its bazel cache
   sync                                 Fetch origin once, fast-forward each worktree's branch to its upstream
   merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
   clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt

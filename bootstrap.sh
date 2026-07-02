@@ -345,11 +345,25 @@ step_tpm() {
 
 ###############################################################################
 step_oh_my_zsh() {
-  if [ ! -d "$HOME/.oh-my-zsh" ]; then
-    RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-  else
+  # Key the check on the file .zshrc actually sources, not the directory:
+  # the plugin/theme clones (later steps) create ~/.oh-my-zsh/custom/ via git's
+  # parent-dir creation, so the dir existing does not mean OMZ is installed.
+  local omz="$HOME/.oh-my-zsh"
+  if [ -f "$omz/oh-my-zsh.sh" ]; then
     echo "oh-my-zsh already installed."
+    return 0
   fi
+  if [ -d "$omz" ]; then
+    local bak
+    bak="$omz.bak.$(date +%Y%m%d%H%M%S)"
+    echo "Incomplete oh-my-zsh at $omz (no oh-my-zsh.sh) — moving to $bak"
+    mv "$omz" "$bak"
+  fi
+  # Plain clone instead of the upstream installer: the installer's other jobs
+  # (.zshrc template, chsh) are handled by setup.sh symlinks and step 4, and
+  # `sh -c "$(curl ...)"` silently succeeds as a no-op when curl fails.
+  git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git "$omz"
+  [ -f "$omz/oh-my-zsh.sh" ]
 }
 
 ###############################################################################

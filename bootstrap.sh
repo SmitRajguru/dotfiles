@@ -423,6 +423,47 @@ step_claude_cli() {
 }
 
 ###############################################################################
+step_rclone() {
+  # Userspace install (no sudo) of the rclone static binary into ~/.local/bin.
+  # Floor = 1.74. Generic binary only — remote config / mounts live elsewhere.
+  local RCLONE_FLOOR="1.74"
+  local RCLONE_BIN="$HOME/.local/bin/rclone"
+  local need=1 ver
+  if [ -x "$RCLONE_BIN" ] || have rclone; then
+    ver=$({ [ -x "$RCLONE_BIN" ] && "$RCLONE_BIN" version || rclone version; } 2>/dev/null | awk 'NR==1{sub(/^v/,"",$2); print $2}')
+    if [ -n "$ver" ] && [ "$(printf '%s\n%s\n' "$RCLONE_FLOOR" "$ver" | sort -V | head -1)" = "$RCLONE_FLOOR" ]; then
+      echo "rclone $ver >= $RCLONE_FLOOR; using existing binary."
+      need=0
+    else
+      echo "rclone ${ver:-<unparsed>} < $RCLONE_FLOOR; will fetch latest static binary."
+    fi
+  else
+    echo "rclone not installed; will fetch latest static binary into ~/.local/bin."
+  fi
+  if [ "$need" = 1 ]; then
+    local arch RCLONE_ARCH
+    arch=$(uname -m)
+    case "$arch" in
+      x86_64)  RCLONE_ARCH=amd64 ;;
+      aarch64) RCLONE_ARCH=arm64 ;;
+      *) echo "ERROR: unsupported arch for rclone binary: $arch" >&2; return 1 ;;
+    esac
+    mkdir -p "$HOME/.local/bin"
+    local TMP
+    TMP=$(mktemp -d)
+    pushd "$TMP" >/dev/null
+    local ZIP="rclone-current-linux-${RCLONE_ARCH}.zip"
+    echo "Downloading $ZIP from downloads.rclone.org..."
+    curl -fL --max-time 120 -O "https://downloads.rclone.org/$ZIP"
+    unzip -q "$ZIP"
+    install -m 0755 rclone-*-linux-"${RCLONE_ARCH}"/rclone "$RCLONE_BIN"
+    popd >/dev/null
+    rm -rf "$TMP"
+    echo "Installed: $("$RCLONE_BIN" version 2>/dev/null | awk 'NR==1{print $2}') -> $RCLONE_BIN"
+  fi
+}
+
+###############################################################################
 step_symlinks() {
   "$REPO/setup.sh"
 }
@@ -442,7 +483,8 @@ run_step "9. zsh plugins (autosuggestions, syntax-highlighting)" step_zsh_plugin
 run_step "10. powerlevel10k theme"                  step_p10k
 run_step "11. MesloLGS NF fonts"                    step_fonts
 run_step "12. Claude Code CLI"                      step_claude_cli
-run_step "13. symlinks (setup.sh)"                  step_symlinks
+run_step "13. rclone >= 1.74 (userspace binary)"    step_rclone
+run_step "14. symlinks (setup.sh)"                  step_symlinks
 
 cat <<'EOF'
 

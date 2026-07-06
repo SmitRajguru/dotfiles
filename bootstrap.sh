@@ -469,6 +469,24 @@ step_symlinks() {
 }
 
 ###############################################################################
+step_tmux_refresh() {
+  # Final step: run the zsh `tmux-refresh` so a fresh machine has tmux plugins
+  # installed + updated (TPM install_plugins + update_plugins all, after killing
+  # any running server) without a manual prefix+I. Uses an interactive zsh so
+  # .zshrc sources aliases.zsh where the function lives. Runs last, after
+  # symlinks (needs the linked tmux.conf + aliases) and TPM (step 7).
+  if [ -n "${TMUX:-}" ]; then
+    # tmux-refresh itself refuses inside tmux (would kill its own server);
+    # skip cleanly rather than surface a false failure.
+    echo "Inside tmux — skipping; detach and run 'tmux-refresh' to finish."
+    return 0
+  fi
+  have zsh || { echo "zsh not found — cannot run tmux-refresh." >&2; return 1; }
+  # Disable p10k instant prompt so its console-output guard doesn't warn here.
+  POWERLEVEL9K_INSTANT_PROMPT=off zsh -ic 'tmux-refresh'
+}
+
+###############################################################################
 # Run.
 ###############################################################################
 run_step "1. apt packages"                          step_apt
@@ -485,6 +503,7 @@ run_step "11. MesloLGS NF fonts"                    step_fonts
 run_step "12. Claude Code CLI"                      step_claude_cli
 run_step "13. rclone >= 1.74 (userspace binary)"    step_rclone
 run_step "14. symlinks (setup.sh)"                  step_symlinks
+run_step "15. tmux-refresh (TPM install + update)"  step_tmux_refresh
 
 cat <<'EOF'
 

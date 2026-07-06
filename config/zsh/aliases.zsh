@@ -266,6 +266,45 @@ _ct_init() {
     _CT_SHA="${_CT_PEACH}"                   # short commit SHAs
     _CT_DONE="${_CT_BOLD}${_CT_GREEN}"       # completion banner
     _CT_PROMPT="${_CT_PEACH}"                # interactive prompts (y/N etc)
+    _ct_tool_colors   # keep LS_COLORS / GREP_COLORS / menus in lockstep with the flavor
+}
+# Strip a `_CT_*` value ($'\e[<sgr>m') down to its bare SGR params (`<sgr>`),
+# the form LS_COLORS / GREP_COLORS / zstyle list-colors expect.
+_ct_sgr() { local s="${1#$'\e['}"; print -rn -- "${s%m}"; }
+# Derive LS_COLORS, GREP_COLORS, and completion-menu list-colors from the
+# active catppuccin swatches so `ls`, `grep`, tree, fzf, and tab-completion
+# menus all share the prompt's palette. Rebuilt by _ct_init on every flavor
+# switch — no separate theme file or generator (e.g. vivid) to keep in sync.
+# Under NO_COLOR, _ct_init returns before calling this, so the inherited
+# color env is left untouched.
+_ct_tool_colors() {
+    local d g y r m p t o pk
+    d="$(_ct_sgr "$_CT_BLUE")"
+    g="$(_ct_sgr "$_CT_GREEN")"    y="$(_ct_sgr "$_CT_YELLOW")"
+    r="$(_ct_sgr "$_CT_RED")"      m="$(_ct_sgr "$_CT_MAUVE")"
+    p="$(_ct_sgr "$_CT_PEACH")"    t="$(_ct_sgr "$_CT_TEAL")"
+    o="$(_ct_sgr "$_CT_OVERLAY1")" pk="$(_ct_sgr "$_CT_PINK")"
+    local -a c
+    c=(
+      "di=01;$d"                        # directory
+      "ln=$t"                           # symlink
+      "or=01;$r"                        # orphaned (broken) symlink
+      "mi=$r"                           # missing link target
+      "ex=01;$g"                        # executable
+      "pi=$y" "so=$m"                   # fifo / socket
+      "bd=$y" "cd=$y"                   # block / char device
+      "su=$r" "sg=$r" "ca=$r"           # setuid / setgid / capability
+      "tw=01;$d" "ow=01;$d" "st=$d"     # sticky / other-writable dirs
+      "*.tar=$p" "*.tgz=$p" "*.gz=$p" "*.zip=$p" "*.xz=$p" "*.zst=$p" "*.bz2=$p" "*.7z=$p" "*.rar=$p"   # archives
+      "*.png=$m" "*.jpg=$m" "*.jpeg=$m" "*.gif=$m" "*.bmp=$m" "*.svg=$m" "*.webp=$m" "*.ico=$m"          # images
+      "*.mp3=$pk" "*.flac=$pk" "*.wav=$pk" "*.mp4=$pk" "*.mkv=$pk" "*.mov=$pk" "*.webm=$pk"              # audio / video
+      "*.pdf=$r" "*.md=$y" "*.json=$y" "*.yaml=$y" "*.yml=$y" "*.toml=$y" "*.txt=$o"                     # docs / data
+    )
+    export LS_COLORS="${(j.:.)c}"
+    # grep: bold peach match, blue filename, green line/byte number, overlay separator.
+    export GREP_COLORS="ms=01;${p}:mc=01;${p}:sl=:cx=:fn=${d}:ln=${g}:bn=${g}:se=${o}"
+    # Tab-completion menus reuse the freshly-built LS_COLORS.
+    zstyle ':completion:*' list-colors "${(@s.:.)LS_COLORS}"
 }
 _ct_init
 

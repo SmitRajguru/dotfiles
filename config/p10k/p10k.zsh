@@ -33,10 +33,10 @@
   typeset -g POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=(
     # =========================[ Line #1 ]=========================
     os_icon                 # os identifier
+    virtualenv              # python venv — kept on the LEFT (before dir/vcs) so a
+                            # narrow terminal or long dir/branch can't hide the venv
     dir                     # current directory
     vcs                     # git status
-    virtualenv              # python venv — kept on the LEFT so a narrow terminal
-                            # (which hides the right prompt) can't hide the active venv
     # =========================[ Line #2 ]=========================
     newline                 # \n
     # prompt_char           # prompt symbol

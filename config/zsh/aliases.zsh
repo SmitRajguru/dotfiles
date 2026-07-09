@@ -85,7 +85,7 @@ else
 fi
 
 # fzf in tmux popup
-export FZF_DEFAULT_OPTS='--tmux center,50%,40%'
+export FZF_DEFAULT_OPTS='--tmux center,70%,60%'
 
 # Catppuccin flavor switchers — change both the zsh-syntax-highlighting
 # colors AND our own aliases.zsh palette (`_CT_*`, used by wt and friends)
@@ -966,7 +966,22 @@ FORKHELP
                 echo "  new branch: ${_CT_REF}$new_branch${_CT_RESET}"
                 git -C "$MAIN_REPO" worktree add -b "$new_branch" "$target_path" "$resolved_ref" || return 1
             fi
-            echo "${_CT_DONE}Done.${_CT_RESET} worktree=${_CT_PATH}$target_path${_CT_RESET} (${_CT_REF}$new_branch${_CT_RESET})"
+            # The new branch has no remote counterpart yet. Point its tracking
+            # config at origin/<new_branch> (not the base ref, which git may
+            # otherwise auto-set as the upstream when forking off a remote
+            # branch), then — only if no existing fetch refspec already covers
+            # the name — prompt to add one so a later push/pull works under
+            # driving's explicit-per-pattern refspecs. No push here; the branch
+            # is created locally only.
+            git -C "$MAIN_REPO" config "branch.${new_branch}.remote" origin
+            git -C "$MAIN_REPO" config "branch.${new_branch}.merge" "refs/heads/${new_branch}"
+            # Gate on *origin* coverage specifically (the remote we track): a
+            # covering refspec on some other remote doesn't make origin/<new>
+            # fetchable. Output rows are "<remote>|<refspec>".
+            if ! _refspecs_covering_branch "$MAIN_REPO" "$new_branch" | grep -q '^origin|'; then
+                _ensure_tracking_refspec "$MAIN_REPO" origin "$new_branch"
+            fi
+            echo "${_CT_DONE}Done.${_CT_RESET} worktree=${_CT_PATH}$target_path${_CT_RESET} (${_CT_REF}$new_branch${_CT_RESET}) → tracks ${_CT_REF}origin/$new_branch${_CT_RESET}"
             ;;
         add)
             local wt_name="$1" ref="$2" remote="${3:-origin}"
@@ -1567,6 +1582,93 @@ SYNCHELP
             echo "${_CT_PHASE}merge:${_CT_RESET} $ref ($source) → $target_path (${target_branch:-detached})"
             git -C "$target_path" merge "$ref"
             ;;
+        prune-branches)
+            # Interactively delete local branches from the CURRENT repo. fzf
+            # multi-select (Tab to mark) with a git-log preview; deletes with
+            # `git branch -d` (safe) then offers `-D` for any that weren't fully
+            # merged. `-f`/`--force` deletes the whole selection with `-D`.
+            local force=0
+            while (( $# )); do
+                case "$1" in
+                    -f|--force) force=1; shift ;;
+                    -h|--help)
+                        echo "${_CT_INFO}Usage:${_CT_RESET} wt prune-branches [-f]   fzf-pick local branches to delete; -f forces -D"
+                        return 0 ;;
+                    *) echo "${_CT_BAD}wt prune-branches:${_CT_RESET} unexpected arg: $1" >&2; return 1 ;;
+                esac
+            done
+            command -v fzf >/dev/null 2>&1 || { echo "${_CT_BAD}wt prune-branches:${_CT_RESET} fzf not found" >&2; return 1; }
+            local repo
+            repo=$(git rev-parse --show-toplevel 2>/dev/null) || {
+                echo "${_CT_BAD}wt prune-branches:${_CT_RESET} not inside a git repository" >&2; return 1; }
+            # Roomier popup than the global default (--tmux ...) and a
+            # full-width wrapped preview below the list, capped at a third of
+            # the popup height so the branch list stays dominant. Long commit
+            # subjects wrap; the log is short and scrollable for the rest.
+            local selected fzf_rc
+            selected=$(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ \
+                | fzf -m --tmux center,85%,80% --prompt='delete branch> ' \
+                      --preview-window='down,33%,wrap' \
+                      --header='Tab=mark  Enter=confirm  (current / worktree-checked-out branches skipped)' \
+                      --preview="git -C ${(q)repo} log --oneline --graph --decorate --color=always -12 {} 2>/dev/null")
+            fzf_rc=$?
+            # fzf: 0=selected, 1=no match, 130=interrupt/ESC → nothing to do.
+            # Anything else (2=error, 126/127) is a real failure worth surfacing.
+            if (( fzf_rc == 1 || fzf_rc == 130 )); then
+                return 0
+            elif (( fzf_rc != 0 )); then
+                echo "${_CT_BAD}wt prune-branches:${_CT_RESET} fzf exited with $fzf_rc" >&2
+                return $fzf_rc
+            fi
+            [[ -z "$selected" ]] && { echo "${_CT_INFO}wt prune-branches:${_CT_RESET} nothing selected."; return 0; }
+            local -a branches unmerged
+            branches=("${(f)selected}")
+            local b out rc ans
+            if (( force )); then
+                echo "${_CT_PROMPT}Force-delete (${_CT_WARN}-D${_CT_PROMPT}) ${#branches} branch(es): ${_CT_REF}${branches[*]}${_CT_PROMPT}? [y/N]${_CT_RESET} "
+                # Read the confirmation from the terminal, not inherited stdin,
+                # so a redirected/piped stdin can't auto-answer a destructive -D.
+                read -r ans < /dev/tty
+                [[ "$ans" == [yY]* ]] || { echo "${_CT_BAD}Aborted.${_CT_RESET}"; return 1; }
+                for b in "${branches[@]}"; do
+                    if git -C "$repo" branch -D "$b" >/dev/null 2>&1; then
+                        echo "  ${_CT_OK}force-deleted${_CT_RESET} ${_CT_REF}$b${_CT_RESET}"
+                    else
+                        echo "  ${_CT_BAD}failed${_CT_RESET} ${_CT_REF}$b${_CT_RESET} ${_CT_PATH}(current or checked out in a worktree)${_CT_RESET}"
+                    fi
+                done
+                return 0
+            fi
+            # Safe pass: -d refuses unmerged branches (collect for the force
+            # prompt) and branches that are current / checked out elsewhere.
+            for b in "${branches[@]}"; do
+                out=$(git -C "$repo" branch -d "$b" 2>&1); rc=$?
+                if (( rc == 0 )); then
+                    echo "  ${_CT_OK}deleted${_CT_RESET} ${_CT_REF}$b${_CT_RESET}"
+                elif [[ "$out" == *"not fully merged"* ]]; then
+                    unmerged+=("$b")
+                    echo "  ${_CT_WARN}unmerged${_CT_RESET} ${_CT_REF}$b${_CT_RESET} ${_CT_PATH}(not fully merged)${_CT_RESET}"
+                else
+                    echo "  ${_CT_BAD}skipped${_CT_RESET} ${_CT_REF}$b${_CT_RESET}: ${_CT_PATH}${out#error: }${_CT_RESET}"
+                fi
+            done
+            if (( ${#unmerged} )); then
+                echo
+                echo "${_CT_PROMPT}${#unmerged} unmerged branch(es): ${_CT_REF}${unmerged[*]}${_CT_PROMPT}. Force-delete (${_CT_WARN}-D${_CT_PROMPT})? [y/N]${_CT_RESET} "
+                read -r ans < /dev/tty
+                if [[ "$ans" == [yY]* ]]; then
+                    for b in "${unmerged[@]}"; do
+                        if git -C "$repo" branch -D "$b" >/dev/null 2>&1; then
+                            echo "  ${_CT_OK}force-deleted${_CT_RESET} ${_CT_REF}$b${_CT_RESET}"
+                        else
+                            echo "  ${_CT_BAD}failed${_CT_RESET} ${_CT_REF}$b${_CT_RESET}"
+                        fi
+                    done
+                else
+                    echo "${_CT_INFO}Kept unmerged branches.${_CT_RESET}"
+                fi
+            fi
+            ;;
         *)
             cat <<'USAGE'
 Usage: wt <command> [args]
@@ -1583,6 +1685,7 @@ Commands:
   merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
   clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
   prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
+  prune-branches [-f]                  fzf-pick local branches to delete (-d, prompts to -D); -f forces -D
   list                                 List all worktrees
 USAGE
             return 1
@@ -1890,7 +1993,7 @@ elif [ -n "$BASH_VERSION" ]; then
         local cur="${COMP_WORDS[COMP_CWORD]}"
         local subcmd="${COMP_WORDS[1]}"
         if (( COMP_CWORD == 1 )); then
-            COMPREPLY=($(compgen -W "cd push pull swap add rm list" -- "$cur"))
+            COMPREPLY=($(compgen -W "cd push pull swap add rm prune-branches list" -- "$cur"))
             return
         fi
         case "$subcmd" in
@@ -1902,8 +2005,8 @@ elif [ -n "$BASH_VERSION" ]; then
             cd|goto)
                 if (( COMP_CWORD == 2 )); then
                     local MAIN_REPO="${MAIN_REPO:-$HOME}"
+                    # Worktrees + the main repo only — not local branch names.
                     local words="$(basename "$MAIN_REPO") $(ls -1 "$HOME/worktrees" 2>/dev/null)"
-                    words="$words $(git -C "$MAIN_REPO" worktree list --porcelain 2>/dev/null | awk '/^branch refs\/heads\//{sub("refs/heads/","",$2); print $2}')"
                     COMPREPLY=($(compgen -W "$words" -- "$cur"))
                 fi
                 ;;
@@ -1915,6 +2018,11 @@ elif [ -n "$BASH_VERSION" ]; then
             add)
                 if (( COMP_CWORD == 3 )); then
                     COMPREPLY=($(compgen -W "$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)" -- "$cur"))
+                fi
+                ;;
+            prune-branches)
+                if (( COMP_CWORD == 2 )); then
+                    COMPREPLY=($(compgen -W "-f --force -h --help" -- "$cur"))
                 fi
                 ;;
         esac

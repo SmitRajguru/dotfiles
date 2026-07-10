@@ -1378,6 +1378,12 @@ SYNCHELP
                 local label
                 if [[ "$wt_path" == "$MAIN_REPO" ]]; then
                     label="$(basename "$MAIN_REPO") (main)"
+                elif [[ "$wt_path" == "$WT_DIR"/* ]]; then
+                    # Name relative to WT_DIR, not basename — a worktree whose
+                    # path has slashes (e.g. baseline_rl_2026/07/03) must keep
+                    # its full sub-path so `wt cd/rm <name>` ($WT_DIR/$name)
+                    # round-trips instead of collapsing to the last segment.
+                    label="${wt_path#"$WT_DIR"/}"
                 else
                     label="${wt_path##*/}"
                 fi
@@ -1703,6 +1709,7 @@ _wt_worktree_compdata() {
     local include_main=1
     [[ "$1" == --linked ]] && include_main=0
     local repo="${MAIN_REPO:-$HOME}"
+    local wt_dir="$HOME/worktrees"
     local wt_path="" wt_branch="" wt_name=""
     while IFS= read -r line; do
         if [[ "$line" == worktree\ * ]]; then
@@ -1713,6 +1720,13 @@ _wt_worktree_compdata() {
             if [[ "$wt_path" == "$repo" ]]; then
                 wt_name=$(basename "$repo")
                 (( include_main )) && { vals+=("$wt_name"); disp+=("$wt_name  -- ${wt_branch:-detached}"); }
+            elif [[ "$wt_path" == "$wt_dir"/* ]]; then
+                # Name relative to WT_DIR so worktrees with slashes in their
+                # path (e.g. baseline_rl_2026/07/03) complete to the full
+                # sub-path and round-trip through `wt cd/rm` ($WT_DIR/$name),
+                # instead of collapsing to a non-resolvable last segment.
+                wt_name="${wt_path#"$wt_dir"/}"
+                vals+=("$wt_name"); disp+=("$wt_name  -- ${wt_branch:-detached}")
             else
                 wt_name="${wt_path##*/}"
                 vals+=("$wt_name"); disp+=("$wt_name  -- ${wt_branch:-detached}")

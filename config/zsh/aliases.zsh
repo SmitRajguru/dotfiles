@@ -806,7 +806,20 @@ wt() {
     # under ~/worktrees, so a missing dir always means deleted — not the
     # unmounted-network-path case that `git worktree prune` warns about.
     __wt_prune_stale() {
+        # Safety: if the worktrees root itself is gone (e.g. an unmounted
+        # mount), every entry would look prunable — bail rather than wipe all
+        # the admin records. Individual worktrees are local under $WT_DIR, so a
+        # single missing dir still means genuinely deleted.
+        [[ -d "$WT_DIR" ]] || return 0
         git -C "$MAIN_REPO" worktree prune 2>/dev/null
+    }
+
+    # Guard a value-taking flag before `shift 2`. zsh's `shift 2` with only one
+    # positional left errors WITHOUT shifting, so a `while (( $# ))` parse loop
+    # never terminates → infinite loop (e.g. `wt add foo --into` with no value).
+    # Call as: __wt_need_val <flag> $# || return 1
+    __wt_need_val() {
+        (( $2 >= 2 )) || { print -u2 -- "${_CT_BAD}wt:${_CT_RESET} $1 requires a value"; return 1; }
     }
 
     case "$action" in
@@ -845,10 +858,13 @@ wt() {
             local wt_name="" fallback="master"
             while (( $# )); do
                 case "$1" in
-                    --switch-to)   fallback="$2"; shift 2 ;;
+                    --switch-to)   __wt_need_val --switch-to $# || return 1; fallback="$2"; shift 2 ;;
                     --switch-to=*) fallback="${1#--switch-to=}"; shift ;;
                     -h|--help)
                         echo "${_CT_INFO}Usage:${_CT_RESET} wt push <wt-name> [--switch-to <branch>]  (default switch-to: master)"; return 0 ;;
+                    -*)
+                        echo "${_CT_BAD}wt push:${_CT_RESET} unknown flag: $1" >&2
+                        return 1 ;;
                     *)
                         if [[ -z "$wt_name" ]]; then
                             wt_name="$1"
@@ -899,10 +915,13 @@ wt() {
             local wt_name="" new_wt_name=""
             while (( $# )); do
                 case "$1" in
-                    --into)   new_wt_name="$2"; shift 2 ;;
+                    --into)   __wt_need_val --into $# || return 1; new_wt_name="$2"; shift 2 ;;
                     --into=*) new_wt_name="${1#--into=}"; shift ;;
                     -h|--help)
                         echo "${_CT_INFO}Usage:${_CT_RESET} wt swap <existing-wt> [--into <new-wt-name>]"; return 0 ;;
+                    -*)
+                        echo "${_CT_BAD}wt swap:${_CT_RESET} unknown flag: $1" >&2
+                        return 1 ;;
                     *)
                         if [[ -z "$wt_name" ]]; then
                             wt_name="$1"
@@ -926,6 +945,15 @@ wt() {
             [[ -z "$cur_branch" ]] && { echo "${_CT_BAD}Error:${_CT_RESET} main repo is in detached HEAD"; return 1; }
             [[ -z "$target_branch" ]] && { echo "${_CT_BAD}Error:${_CT_RESET} worktree is in detached HEAD"; return 1; }
             [[ -z "$new_wt_name" ]] && new_wt_name=$(__wt_name_from_branch "$cur_branch")
+            # Preflight the target dir BEFORE the destructive remove+checkout:
+            # a collision (e.g. sanitized --into duplicating an existing wt)
+            # would otherwise only fail at `git worktree add` below, after the
+            # swap partner is gone and main has already switched branches.
+            # Allow the target to equal the wt being removed (same-name swap).
+            if [[ -e "$WT_DIR/$new_wt_name" && "$WT_DIR/$new_wt_name" != "$wt_path" ]]; then
+                echo "${_CT_BAD}Error:${_CT_RESET} target worktree ~/worktrees/$new_wt_name already exists; pass a different --into" >&2
+                return 1
+            fi
             echo "${_CT_PHASE}swap:${_CT_RESET} main (${_CT_REF}$cur_branch${_CT_RESET}) ↔ ${_CT_PATH}~/worktrees/$wt_name${_CT_RESET} (${_CT_REF}$target_branch${_CT_RESET})"
             echo "  main → ${_CT_REF}$target_branch${_CT_RESET}"
             echo "  ${_CT_PATH}~/worktrees/$new_wt_name${_CT_RESET} → ${_CT_REF}$cur_branch${_CT_RESET}"
@@ -947,14 +975,17 @@ wt() {
             while (( $# )); do
                 case "$1" in
                     --from)
+                        __wt_need_val --from $# || return 1
                         from_ref="$2"; shift 2 ;;
                     --from=*)
                         from_ref="${1#--from=}"; shift ;;
                     --name)
+                        __wt_need_val --name $# || return 1
                         new_branch="$2"; shift 2 ;;
                     --name=*)
                         new_branch="${1#--name=}"; shift ;;
                     --into)
+                        __wt_need_val --into $# || return 1
                         into_name="$2"; shift 2 ;;
                     --into=*)
                         into_name="${1#--into=}"; shift ;;
@@ -1061,12 +1092,15 @@ FORKHELP
             local ref="" wt_name="" remote="origin"
             while (( $# )); do
                 case "$1" in
-                    --into)     wt_name="$2"; shift 2 ;;
+                    --into)     __wt_need_val --into $# || return 1; wt_name="$2"; shift 2 ;;
                     --into=*)   wt_name="${1#--into=}"; shift ;;
-                    --remote)   remote="$2"; shift 2 ;;
+                    --remote)   __wt_need_val --remote $# || return 1; remote="$2"; shift 2 ;;
                     --remote=*) remote="${1#--remote=}"; shift ;;
                     -h|--help)
                         echo "${_CT_INFO}Usage:${_CT_RESET} wt add <ref> --into <wt-name> [--remote <remote>]  (default remote: origin)"; return 0 ;;
+                    -*)
+                        echo "${_CT_BAD}wt add:${_CT_RESET} unknown flag: $1" >&2
+                        return 1 ;;
                     *)
                         if [[ -z "$ref" ]]; then
                             ref="$1"
@@ -1230,6 +1264,7 @@ FORKHELP
             while (( $# )); do
                 case "$1" in
                     --into)
+                        __wt_need_val --into $# || return 1
                         into_name="$2"; shift 2 ;;
                     --into=*)
                         into_name="${1#--into=}"; shift ;;
@@ -1630,10 +1665,12 @@ SYNCHELP
             while (( $# )); do
                 case "$1" in
                     --ref)
+                        __wt_need_val --ref $# || return 1
                         branch="$2"; shift 2 ;;
                     --ref=*)
                         branch="${1#--ref=}"; shift ;;
                     --into)
+                        __wt_need_val --into $# || return 1
                         into_name="$2"; shift 2 ;;
                     --into=*)
                         into_name="${1#--into=}"; shift ;;

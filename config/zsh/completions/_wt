@@ -5,6 +5,21 @@
 # automatically — survives any number of compinit reruns from later-sourced
 # rc files.
 
+# Resolve the flag whose *value* is being completed, into REPLY. Handles both
+# the spaced form (`--into <TAB>` — flag is the previous word) and the equals
+# form (`--into=<TAB>` — flag is embedded in the current word). The runtime
+# parsers accept `--flag=value`, so completion must fire for it too. For the
+# equals form we also `compset` off the `--flag=` prefix so completions insert
+# only the value.
+_wt_value_flag() {
+    if [[ ${words[CURRENT]} == --*=* ]]; then
+        REPLY=${words[CURRENT]%%=*}
+        compset -P "${REPLY}="   # strip exactly `--flag=`, not up to the last `=`
+    else
+        REPLY=${words[CURRENT-1]}
+    fi
+}
+
 if (( CURRENT == 2 )); then
     local -a vals disp
     vals=(cd push pull swap fork add rm sync merge clean prune prune-branches list)
@@ -38,7 +53,8 @@ case "${words[2]}" in
     swap)
         # `wt swap <existing-wt> [--into <new-wt-name>]` — pos 3 is an existing
         # worktree; --into is a new worktree name (freeform, no completion).
-        case "${words[CURRENT-1]}" in
+        local REPLY; _wt_value_flag
+        case "$REPLY" in
             --into)
                 _message "name for the new worktree that receives main's old branch"
                 return ;;
@@ -67,7 +83,8 @@ case "${words[2]}" in
     push)
         # `wt push <wt-name> [--switch-to <branch>]` — pos 3 is the new worktree
         # name (freeform); --switch-to takes a branch.
-        case "${words[CURRENT-1]}" in
+        local REPLY; _wt_value_flag
+        case "$REPLY" in
             --switch-to)
                 local -a branches
                 branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch --format='%(refname:short)' 2>/dev/null)"})
@@ -87,7 +104,8 @@ case "${words[2]}" in
         # `wt add <ref> --into <wt-name> [--remote <remote>]` — pos 3 is the base
         # ref (branches; tags/SHAs typed manually); --into is a new worktree name
         # (freeform); --remote completes configured remotes.
-        case "${words[CURRENT-1]}" in
+        local REPLY; _wt_value_flag
+        case "$REPLY" in
             --into)
                 _message 'new worktree dir name (created under ~/worktrees)'
                 return ;;
@@ -114,7 +132,8 @@ case "${words[2]}" in
     merge)
         # `wt merge --ref <branch> [--into <wt>]` — --ref takes a branch (local +
         # remote), --into an existing worktree.
-        case "${words[CURRENT-1]}" in
+        local REPLY; _wt_value_flag
+        case "$REPLY" in
             --ref)
                 local -a branches
                 branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
@@ -138,7 +157,8 @@ case "${words[2]}" in
         ;;
     clean)
         # `wt clean [--into <wt>] [-x] [-y]` — flags only; --into takes a wt name.
-        case "${words[CURRENT-1]}" in
+        local REPLY; _wt_value_flag
+        case "$REPLY" in
             --into)
                 local -a vals disp
                 _wt_worktree_compdata
@@ -170,7 +190,8 @@ case "${words[2]}" in
         # `wt fork --from <ref> --name <branch> [--into <wt>]`
         # --from completes worktree names + branch names (tags/SHAs typed).
         # --into completes worktree names. --name takes no completion.
-        case "${words[CURRENT-1]}" in
+        local REPLY; _wt_value_flag
+        case "$REPLY" in
             --from)
                 # worktrees (name -- branch) + branch names (tags/SHAs typed manually)
                 local -a vals disp branches

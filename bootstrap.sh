@@ -84,6 +84,7 @@ step_apt() {
     libncurses5-dev build-essential
     libevent-dev ncurses-dev bison pkg-config
     fzf jq fontconfig
+    expect  # provides `unbuffer`, used by _capture_with_color to keep colors
     software-properties-common
   )
   local MISSING=()

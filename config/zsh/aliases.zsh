@@ -799,12 +799,23 @@ wt() {
         echo "$clean"
     }
 
+    # Drop git worktree admin records whose dir was deleted out-of-band (a
+    # manual `rm` instead of `wt rm`). Otherwise they linger as "prunable"
+    # phantoms in list/cd/rm output and completion. Called at the top of the
+    # read/list arms so those self-heal. Safe here: every worktree is local
+    # under ~/worktrees, so a missing dir always means deleted — not the
+    # unmounted-network-path case that `git worktree prune` warns about.
+    __wt_prune_stale() {
+        git -C "$MAIN_REPO" worktree prune 2>/dev/null
+    }
+
     case "$action" in
         cd|goto)
             # Jump to a worktree by its directory name, "main"/main-repo
             # basename, or a checked-out branch name. cd persists because wt()
             # runs in the calling shell. No arg -> list. (Folded in from the
             # old standalone cd-wt.)
+            __wt_prune_stale
             local target="$1" dest=""
             if [[ -z "$target" ]]; then
                 git -C "$MAIN_REPO" worktree list
@@ -1106,6 +1117,7 @@ FORKHELP
             echo "${_CT_DONE}Done.${_CT_RESET} worktree=~/worktrees/$wt_name ($ref)"
             ;;
         rm|remove)
+            __wt_prune_stale
             local force=0 wt_name="$1"
             if [[ "$1" == "-f" || "$1" == "--force" ]]; then
                 force=1
@@ -1204,6 +1216,7 @@ FORKHELP
             echo "${_CT_DONE}Done.${_CT_RESET}"
             ;;
         list|ls)
+            __wt_prune_stale
             git -C "$MAIN_REPO" worktree list
             ;;
         clean)

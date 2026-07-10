@@ -1427,17 +1427,22 @@ PRUNEHELP
             # each worktree's checked-out branch to its upstream. Classifies
             # each wt as up-to-date / ff / ahead / diverged / no-upstream /
             # detached / dirty. Refuses ff on dirty wts.
+            local dry_run=0 t0=$SECONDS
             case "${1:-}" in
                 -h|--help)
                     cat <<'SYNCHELP'
-Usage: wt sync
+Usage: wt sync [--dry-run|-n]
   Single `git fetch origin --prune` from the main repo (shared refs),
   then `hub sync` in MAIN_REPO to ff every local branch that tracks
   a remote, then per-worktree `git merge --ff-only @{u}` on the
   checked-out branch. Skips dirty / detached / upstream-less
   worktrees. Logs diverged or ahead branches without modifying them.
+  --dry-run / -n: report state only — no fetch / hub-sync / merge.
 SYNCHELP
                     return 0 ;;
+                -n|--dry-run) dry_run=1 ;;
+                "") ;;
+                *) print -u2 -- "${_CT_BAD}wt sync:${_CT_RESET} unknown arg '$1' (try --dry-run or -h)"; return 1 ;;
             esac
             # Output is laid out in three indent levels for readability:
             #   L0 (0 spaces): phase markers (`[fetch]`, summary line)
@@ -1455,38 +1460,47 @@ SYNCHELP
             # globally at the top of this file.
             # Drop stale worktree admin records first (same self-heal as
             # cd/rm/list) so the enumeration below only sees live worktrees.
+            # Runs in --dry-run too: it only removes records for already-deleted
+            # dirs, which keeps the report accurate rather than mutating state.
             __wt_prune_stale
-            echo "${_CT_PHASE}[fetch]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: git fetch origin --prune"
-            # Capture output then print, so sed doesn't mask the fetch's exit
-            # status (a `git | sed` pipeline yields sed's status).
-            local fetch_output fetch_rc
-            fetch_output=$(_capture_with_color git -C "$MAIN_REPO" fetch origin --prune)
-            fetch_rc=$?
-            if [[ -n "$fetch_output" ]]; then
-                printf '%s\n' "$fetch_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
+            # Network phase: fetch once (shared refs), then hub-sync to ff every
+            # tracking branch. Skipped under --dry-run, which reports state as of
+            # the last real sync.
+            if (( dry_run )); then
+                echo "${_CT_PHASE}[dry-run]${_CT_RESET} ${_CT_PATH}no fetch / hub-sync / merge — reporting last-known state${_CT_RESET}"
             else
-                echo "    ${_CT_PATH}(no updates)${_CT_RESET}"
-            fi
-            if (( fetch_rc != 0 )); then
-                echo "${_CT_BAD}[fetch] failed (rc=$fetch_rc); aborting wt sync${_CT_RESET}" >&2
-                return 1
-            fi
-            # `hub sync` ff's every local branch in MAIN_REPO that tracks a
-            # remote (not just the checked-out one). Complements the per-wt
-            # ff below, which only touches branches currently checked out
-            # somewhere.
-            echo "${_CT_PHASE}[hub-sync]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: hub sync"
-            local hub_output hub_rc
-            hub_output=$(_capture_with_color hub -C "$MAIN_REPO" sync)
-            hub_rc=$?
-            if [[ -n "$hub_output" ]]; then
-                printf '%s\n' "$hub_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
-            else
-                echo "    ${_CT_PATH}(all branches up-to-date)${_CT_RESET}"
-            fi
-            if (( hub_rc != 0 )); then
-                echo "${_CT_BAD}[hub-sync] failed (rc=$hub_rc); aborting wt sync${_CT_RESET}" >&2
-                return 1
+                echo "${_CT_PHASE}[fetch]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: git fetch origin --prune"
+                # Capture output then print, so sed doesn't mask the fetch's exit
+                # status (a `git | sed` pipeline yields sed's status).
+                local fetch_output fetch_rc
+                fetch_output=$(_capture_with_color git -C "$MAIN_REPO" fetch origin --prune)
+                fetch_rc=$?
+                if [[ -n "$fetch_output" ]]; then
+                    printf '%s\n' "$fetch_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
+                else
+                    echo "    ${_CT_PATH}(no updates)${_CT_RESET}"
+                fi
+                if (( fetch_rc != 0 )); then
+                    echo "${_CT_BAD}[fetch] failed (rc=$fetch_rc); aborting wt sync${_CT_RESET}" >&2
+                    return 1
+                fi
+                # `hub sync` ff's every local branch in MAIN_REPO that tracks a
+                # remote (not just the checked-out one). Complements the per-wt
+                # ff below, which only touches branches currently checked out
+                # somewhere.
+                echo "${_CT_PHASE}[hub-sync]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: hub sync"
+                local hub_output hub_rc
+                hub_output=$(_capture_with_color hub -C "$MAIN_REPO" sync)
+                hub_rc=$?
+                if [[ -n "$hub_output" ]]; then
+                    printf '%s\n' "$hub_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
+                else
+                    echo "    ${_CT_PATH}(all branches up-to-date)${_CT_RESET}"
+                fi
+                if (( hub_rc != 0 )); then
+                    echo "${_CT_BAD}[hub-sync] failed (rc=$hub_rc); aborting wt sync${_CT_RESET}" >&2
+                    return 1
+                fi
             fi
             echo "${_CT_PHASE}[worktrees]${_CT_RESET}"
             local -a wts
@@ -1508,14 +1522,21 @@ SYNCHELP
                 printf '      %s%-9s%s %b\n' "${_CT_PATH}" "$1" "${_CT_RESET}" "$2"
             }
             _wt_head_meta() {
-                # HEAD context shown for every wt: commit subject + relative age.
-                # Uses %s (not %b) for the git-supplied text so subjects with
-                # backslashes render literally; matches _wt_sync_meta's layout.
-                local subj age
-                subj=$(git -C "$1" log -1 --format='%s' 2>/dev/null)
-                age=$(git -C "$1" log -1 --format='%cr' 2>/dev/null)
-                [[ -n "$subj" ]] && printf '      %s%-9s%s %s%s%s\n' "${_CT_PATH}" "commit" "${_CT_RESET}" "${_CT_SUBTEXT0}" "$subj" "${_CT_RESET}"
-                [[ -n "$age"  ]] && printf '      %s%-9s%s %s%s%s\n' "${_CT_PATH}" "age"    "${_CT_RESET}" "${_CT_SUBTEXT0}" "$age"  "${_CT_RESET}"
+                # HEAD context for every wt: commit subject + relative age, with
+                # a (stale Nd) marker once HEAD is older than stale_days. Uses %s
+                # (not %b) for git-supplied text so subjects with backslashes
+                # render literally; matches _wt_sync_meta's layout.
+                local subj age ts now ndays stale_days=14 stale=""
+                subj=$(git -C "$1" log -1 --format='%s'  2>/dev/null)
+                age=$(git  -C "$1" log -1 --format='%cr' 2>/dev/null)
+                ts=$(git   -C "$1" log -1 --format='%ct' 2>/dev/null)
+                now=$(date +%s)
+                if [[ -n "$ts" && -n "$now" ]]; then
+                    ndays=$(( (now - ts) / 86400 ))
+                    (( ndays >= stale_days )) && stale=" ${_CT_WARN}(stale ${ndays}d)${_CT_RESET}"
+                fi
+                [[ -n "$subj" ]] && printf '      %s%-9s%s %s%s%s\n'   "${_CT_PATH}" "commit" "${_CT_RESET}" "${_CT_SUBTEXT0}" "$subj" "${_CT_RESET}"
+                [[ -n "$age"  ]] && printf '      %s%-9s%s %s%s%s%s\n' "${_CT_PATH}" "age"    "${_CT_RESET}" "${_CT_SUBTEXT0}" "$age"  "${_CT_RESET}" "$stale"
             }
             for wt_path in $wts; do
                 local label
@@ -1619,13 +1640,17 @@ SYNCHELP
                     _wt_sync_meta "branch"   "${_CT_REF}${branch}${_CT_RESET}"
                     _wt_sync_meta "upstream" "${_CT_REF}${upstream}${_CT_RESET}"
                     _wt_sync_meta "local"    "${_CT_SHA}${local_short}${_CT_RESET} → ${_CT_SHA}${remote_short}${_CT_RESET} ${_CT_PATH}(behind ${_CT_WARN}${n_behind}${_CT_PATH})${_CT_RESET}"
-                    local merge_output merge_rc
-                    merge_output=$(_capture_with_color git -C "$wt_path" merge --ff-only "$upstream")
-                    merge_rc=$?
-                    [[ -n "$merge_output" ]] && printf '%s\n' "$merge_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
-                    if (( merge_rc != 0 )); then
-                        echo "  ${_CT_BAD}[ff] failed (rc=$merge_rc); aborting wt sync${_CT_RESET}" >&2
-                        return 1
+                    if (( dry_run )); then
+                        echo "    ${_CT_PATH}(dry-run: would fast-forward)${_CT_RESET}"
+                    else
+                        local merge_output merge_rc
+                        merge_output=$(_capture_with_color git -C "$wt_path" merge --ff-only "$upstream")
+                        merge_rc=$?
+                        [[ -n "$merge_output" ]] && printf '%s\n' "$merge_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
+                        if (( merge_rc != 0 )); then
+                            echo "  ${_CT_BAD}[ff] failed (rc=$merge_rc); aborting wt sync${_CT_RESET}" >&2
+                            return 1
+                        fi
                     fi
                     ff_list+=("$label ($branch)")
                 elif git -C "$wt_path" merge-base --is-ancestor "$remote_sha" "$local_sha"; then
@@ -1648,6 +1673,10 @@ SYNCHELP
             unset -f _wt_sync_meta _wt_head_meta
             echo
             echo "${_CT_DONE}Done.${_CT_RESET}"
+            # Headline: at-a-glance did-anything-move line + wall-clock duration.
+            printf '%s⏱ %d worktree(s) in %ds%s %s(ff %d · dirty %d)%s\n' \
+                "${_CT_PHASE}" ${#wts} $(( SECONDS - t0 )) "${_CT_RESET}" \
+                "${_CT_PATH}" ${#ff_list} ${#dirty_list} "${_CT_RESET}"
             # Grouped summary: one block per non-empty category. Categories
             # with zero members are omitted entirely so the summary scales
             # with what actually happened. Category color matches the
@@ -1671,6 +1700,18 @@ SYNCHELP
             _wt_sync_summary_block "no-upstream"  "$_CT_WARN" "${no_upstream_list[@]}"
             _wt_sync_summary_block "detached"     "$_CT_BAD"  "${detached_list[@]}"
             _wt_sync_summary_block "dirty"        "$_CT_BAD"  "${dirty_list[@]}"
+            # Likely-merged branches: our `fetch --prune` deletes origin/<branch>
+            # for PRs that were squash-merged and had their remote branch
+            # deleted, which leaves the local branch tracking a now-`gone`
+            # upstream. `git branch --merged` can't see squash merges (the
+            # commits never land verbatim on master), so the gone-upstream
+            # signal is the reliable "PR merged, safe to delete locally" cue.
+            local gone_raw; local -a gone_branches
+            gone_raw=$(git -C "$MAIN_REPO" for-each-ref \
+                --format='%(refname:short) %(upstream:track,nobracket)' refs/heads 2>/dev/null \
+                | awk '$2=="gone"{print $1}')
+            [[ -n "$gone_raw" ]] && gone_branches=(${(f)gone_raw})
+            _wt_sync_summary_block "merged? (remote branch gone)" "$_CT_MAUVE" "${gone_branches[@]}"
             unset -f _wt_sync_summary_block
             # Local-branch count advisory — a nudge toward `wt prune-branches`
             # when they pile up. Thresholds are generous for a worktree-heavy
@@ -1686,7 +1727,8 @@ SYNCHELP
             fi
             echo
             printf '%s%s local branches%s' "$branch_color" "$n_branches" "$_CT_RESET"
-            (( n_branches >= warn_at )) && printf ' %s→ consider `wt prune-branches`%s' "$_CT_PATH" "$_CT_RESET"
+            (( ${#gone_branches} > 0 )) && printf ' %s— %d look merged (remote gone)%s' "$_CT_MAUVE" ${#gone_branches} "$_CT_RESET"
+            (( n_branches >= warn_at || ${#gone_branches} > 0 )) && printf ' %s→ consider `wt prune-branches`%s' "$_CT_PATH" "$_CT_RESET"
             printf '\n'
             ;;
         merge)

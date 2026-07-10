@@ -235,4 +235,14 @@ case "${words[2]}" in
             compadd -l -d fdisp -a flags
         fi
         ;;
+    sync)
+        # `wt sync [--dry-run|-n]` — flags only.
+        local -a flags fdisp
+        flags=(--dry-run -n)
+        fdisp=(
+            "--dry-run  -- Report state only; no fetch / hub-sync / merge"
+            "-n         -- Alias for --dry-run"
+        )
+        compadd -l -d fdisp -a flags
+        ;;
 esac

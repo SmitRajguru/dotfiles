@@ -40,6 +40,7 @@ case "${words[2]}" in
         # worktree; --into is a new worktree name (freeform, no completion).
         case "${words[CURRENT-1]}" in
             --into)
+                _message "name for the new worktree that receives main's old branch"
                 return ;;
         esac
         if (( CURRENT == 3 )); then
@@ -47,7 +48,10 @@ case "${words[2]}" in
             _wt_worktree_compdata --linked
             compadd -l -d disp -a vals
         else
-            compadd -- --into
+            local -a flags fdisp
+            flags=(--into)
+            fdisp=("--into  -- name for the new worktree holding main's old branch (optional; default derived from branch)")
+            compadd -l -d fdisp -a flags
         fi
         ;;
     cd|goto)
@@ -70,7 +74,14 @@ case "${words[2]}" in
                 compadd -a branches
                 return ;;
         esac
-        (( CURRENT > 3 )) && compadd -- --switch-to
+        if (( CURRENT == 3 )); then
+            _message 'new worktree dir name for the current branch'
+        else
+            local -a flags fdisp
+            flags=(--switch-to)
+            fdisp=("--switch-to  -- branch the main repo checks out afterward (optional; default master)")
+            compadd -l -d fdisp -a flags
+        fi
         ;;
     add)
         # `wt add <ref> --into <wt-name> [--remote <remote>]` — pos 3 is the base
@@ -78,6 +89,7 @@ case "${words[2]}" in
         # (freeform); --remote completes configured remotes.
         case "${words[CURRENT-1]}" in
             --into)
+                _message 'new worktree dir name (created under ~/worktrees)'
                 return ;;
             --remote)
                 local -a remotes
@@ -88,9 +100,15 @@ case "${words[2]}" in
         if (( CURRENT == 3 )); then
             local -a branches
             branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
-            compadd -a branches
+            compadd -X '<ref> -- base ref to check out: branch / tag / sha (tags & SHAs typed manually)' -a branches
         else
-            compadd -- --into --remote
+            local -a flags fdisp
+            flags=(--into --remote)
+            fdisp=(
+                "--into    -- worktree dir name to create (required)"
+                "--remote  -- remote to resolve <ref> against (optional; default origin)"
+            )
+            compadd -l -d fdisp -a flags
         fi
         ;;
     merge)
@@ -100,7 +118,7 @@ case "${words[2]}" in
             --ref)
                 local -a branches
                 branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
-                compadd -a branches
+                compadd -X '<ref> -- branch / tag / sha to merge in (tags & SHAs typed manually)' -a branches
                 return
                 ;;
             --into)
@@ -110,7 +128,13 @@ case "${words[2]}" in
                 return
                 ;;
         esac
-        compadd -- --ref --into
+        local -a flags fdisp
+        flags=(--ref --into)
+        fdisp=(
+            "--ref   -- ref to merge in: branch / tag / sha (required)"
+            "--into  -- target worktree to merge into (optional; default = cwd's worktree)"
+        )
+        compadd -l -d fdisp -a flags
         ;;
     clean)
         # `wt clean [--into <wt>] [-x] [-y]` — flags only; --into takes a wt name.

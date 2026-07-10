@@ -784,6 +784,20 @@ wt() {
         echo "$1" | sed 's|^srajguru/||; s|^[^/]*/||; s|/|-|g'
     }
 
+    # Flatten '/' -> '-' in an explicitly-provided worktree dir name. A name
+    # with slashes creates a nested path under WT_DIR (e.g. foo/07/03), which
+    # collapses to a non-resolvable last segment in list/completion and can't
+    # round-trip through `wt cd/rm` ($WT_DIR/$name). Mirrors the '/' rule in
+    # __wt_name_from_branch. Prints a note to stderr when it changes the name;
+    # echoes the sanitized name on stdout (empty stays empty for the caller's
+    # usage/auto-derive checks).
+    __wt_sanitize_name() {
+        local raw="$1" clean="${1//\//-}"
+        [[ "$clean" != "$raw" ]] && \
+            print -u2 -- "${_CT_INFO}note:${_CT_RESET} worktree name '$raw' → '$clean' (flattened '/')"
+        echo "$clean"
+    }
+
     case "$action" in
         cd|goto)
             # Jump to a worktree by its directory name, "main"/main-repo
@@ -813,6 +827,7 @@ wt() {
             ;;
         push)
             local wt_name="$1" fallback="${2:-master}"
+            wt_name=$(__wt_sanitize_name "$wt_name")
             if [[ -z "$wt_name" ]]; then
                 echo "${_CT_INFO}Usage:${_CT_RESET} wt push <worktree> [switch-to]  (default switch-to: master)"
                 return 1
@@ -844,6 +859,7 @@ wt() {
             ;;
         swap)
             local wt_name="$1" new_wt_name="$2"
+            new_wt_name=$(__wt_sanitize_name "$new_wt_name")
             if [[ -z "$wt_name" ]]; then
                 echo "${_CT_INFO}Usage:${_CT_RESET} wt swap <worktree> [new-worktree-name]"
                 return 1
@@ -985,6 +1001,7 @@ FORKHELP
             ;;
         add)
             local wt_name="$1" ref="$2" remote="${3:-origin}"
+            wt_name=$(__wt_sanitize_name "$wt_name")
             if [[ -z "$wt_name" || -z "$ref" ]]; then
                 echo "${_CT_INFO}Usage:${_CT_RESET} wt add <worktree-name> <ref> [remote]  (default remote: origin)"
                 return 1

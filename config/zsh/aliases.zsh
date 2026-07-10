@@ -2011,18 +2011,27 @@ tmux-send-all() {
             ver=$(( ${old_line%%|*} + 1 ))
         fi
         echo "${ver}|${cmd}" > "$pending"
-        # Run in the sending pane immediately and mark as served
-        tmux set-option -p @deferred_version "$ver" 2>/dev/null
         echo "${_CT_PHASE}[send-all]${_CT_RESET} running: ${_CT_PATH}$cmd${_CT_RESET}"
-        eval "$cmd"
-        # Send immediately to idle zsh panes, mark them as served
+        # Broadcast to every OTHER idle zsh pane FIRST, marking each served.
+        # Must happen before the local eval below: if $cmd replaces or blocks
+        # this shell (e.g. `exec zsh`), a local-eval-first order would abort the
+        # loop and leave the other panes to catch it only via the deferred file
+        # on their next prompt. Busy / non-zsh panes are skipped here and pick
+        # it up via _check_deferred_cmd. Self is excluded to avoid a double-run.
+        local self="$TMUX_PANE"
         tmux list-panes -a -F '#{pane_id} #{pane_current_command}' \
         | while read -r pane_id pcmd; do
+            [[ "$pane_id" == "$self" ]] && continue
             [[ "$pcmd" == "zsh" ]] || continue
             tmux set-option -t "$pane_id" -p @deferred_version "$ver" 2>/dev/null
             tmux send-keys -t "$pane_id" -l -- " $cmd"
             tmux send-keys -t "$pane_id" C-m
         done
+        # Mark self served, then run locally LAST (survives an exec, and the
+        # tmux pane option persists across it so the reloaded shell won't re-run
+        # the command from the deferred file).
+        tmux set-option -p @deferred_version "$ver" 2>/dev/null
+        eval "$cmd"
     else
         tmux list-sessions -F '#S' | while IFS= read -r s; do
             tmux send-keys -t "${s}:" -l -- "$cmd"

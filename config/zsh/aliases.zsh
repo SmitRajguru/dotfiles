@@ -735,15 +735,16 @@ zsh_directory_name_functions=(${zsh_directory_name_functions:#_zdn_repo} _zdn_re
 
 # -------------------------------------------------------------------
 # wt — Worktree management: push, pull, swap, fork, add, rm, sync, merge, clean, prune
-#   wt push <worktree> [switch-to]          Current branch → worktree, main → [switch-to] (default: master)
+#   wt push <worktree> [--switch-to <br>]   Current branch → worktree, main → --switch-to (default: master)
 #   wt pull <worktree>                      Worktree branch → main dir, remove worktree
-#   wt swap <worktree> [new-worktree-name]  Swap main dir branch ↔ worktree
+#   wt swap <worktree> [--into <new-wt>]    Swap main dir branch ↔ worktree
 #   wt fork --from <ref> --name <branch> [--into <wt>]
 #                                           Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
-#   wt add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
+#   wt add <ref> --into <worktree> [--remote <r>]
+#                                           Add <ref> (branch/tag/sha) as a new worktree (default remote: origin)
 #   wt rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt); auto-purges its bazel cache
 #   wt sync                                 Fetch origin once + `hub sync` in MAIN_REPO, fast-forward each worktree's branch to its upstream
-#   wt merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
+#   wt merge --ref <ref> [--into <worktree>] Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
 #   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
 #   wt prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
 #   wt list                                 List all worktrees
@@ -826,10 +827,30 @@ wt() {
             [[ -n "$TMUX" ]] && tmux set-option -p @pane_prefix "${PWD:t}" 2>/dev/null
             ;;
         push)
-            local wt_name="$1" fallback="${2:-master}"
+            # wt push <wt-name> [--switch-to <branch>]
+            # Move the main repo's current branch into a new worktree <wt-name>
+            # (positional subject, sanitized: '/' -> '-'), then switch the main
+            # repo to --switch-to (default master).
+            local wt_name="" fallback="master"
+            while (( $# )); do
+                case "$1" in
+                    --switch-to)   fallback="$2"; shift 2 ;;
+                    --switch-to=*) fallback="${1#--switch-to=}"; shift ;;
+                    -h|--help)
+                        echo "${_CT_INFO}Usage:${_CT_RESET} wt push <wt-name> [--switch-to <branch>]  (default switch-to: master)"; return 0 ;;
+                    *)
+                        if [[ -z "$wt_name" ]]; then
+                            wt_name="$1"
+                        else
+                            echo "${_CT_BAD}wt push:${_CT_RESET} unexpected arg: $1" >&2
+                            return 1
+                        fi
+                        shift ;;
+                esac
+            done
             wt_name=$(__wt_sanitize_name "$wt_name")
             if [[ -z "$wt_name" ]]; then
-                echo "${_CT_INFO}Usage:${_CT_RESET} wt push <worktree> [switch-to]  (default switch-to: master)"
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt push <wt-name> [--switch-to <branch>]  (default switch-to: master)"
                 return 1
             fi
             local cur_branch
@@ -858,10 +879,32 @@ wt() {
             echo "${_CT_DONE}Done.${_CT_RESET} main=$target_branch"
             ;;
         swap)
-            local wt_name="$1" new_wt_name="$2"
+            # wt swap <existing-wt> [--into <new-wt-name>]
+            # Swap the main repo's branch with <existing-wt>'s branch. The new
+            # worktree that receives main's old branch is named --into
+            # (sanitized: '/' -> '-'), defaulting to a name derived from that
+            # branch. <existing-wt> is a reference to an existing worktree
+            # (positional subject, not sanitized).
+            local wt_name="" new_wt_name=""
+            while (( $# )); do
+                case "$1" in
+                    --into)   new_wt_name="$2"; shift 2 ;;
+                    --into=*) new_wt_name="${1#--into=}"; shift ;;
+                    -h|--help)
+                        echo "${_CT_INFO}Usage:${_CT_RESET} wt swap <existing-wt> [--into <new-wt-name>]"; return 0 ;;
+                    *)
+                        if [[ -z "$wt_name" ]]; then
+                            wt_name="$1"
+                        else
+                            echo "${_CT_BAD}wt swap:${_CT_RESET} unexpected arg: $1" >&2
+                            return 1
+                        fi
+                        shift ;;
+                esac
+            done
             new_wt_name=$(__wt_sanitize_name "$new_wt_name")
             if [[ -z "$wt_name" ]]; then
-                echo "${_CT_INFO}Usage:${_CT_RESET} wt swap <worktree> [new-worktree-name]"
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt swap <existing-wt> [--into <new-wt-name>]"
                 return 1
             fi
             local wt_path="$WT_DIR/$wt_name"
@@ -1000,10 +1043,32 @@ FORKHELP
             echo "${_CT_DONE}Done.${_CT_RESET} worktree=${_CT_PATH}$target_path${_CT_RESET} (${_CT_REF}$new_branch${_CT_RESET}) → tracks ${_CT_REF}origin/$new_branch${_CT_RESET}"
             ;;
         add)
-            local wt_name="$1" ref="$2" remote="${3:-origin}"
+            # wt add <ref> --into <wt-name> [--remote <remote>]
+            # Add an existing ref (local/remote branch, tag, or SHA) as a new
+            # worktree. <ref> is the positional subject; --into names the
+            # worktree dir (sanitized: '/' -> '-'); --remote defaults to origin.
+            local ref="" wt_name="" remote="origin"
+            while (( $# )); do
+                case "$1" in
+                    --into)     wt_name="$2"; shift 2 ;;
+                    --into=*)   wt_name="${1#--into=}"; shift ;;
+                    --remote)   remote="$2"; shift 2 ;;
+                    --remote=*) remote="${1#--remote=}"; shift ;;
+                    -h|--help)
+                        echo "${_CT_INFO}Usage:${_CT_RESET} wt add <ref> --into <wt-name> [--remote <remote>]  (default remote: origin)"; return 0 ;;
+                    *)
+                        if [[ -z "$ref" ]]; then
+                            ref="$1"
+                        else
+                            echo "${_CT_BAD}wt add:${_CT_RESET} unexpected arg: $1" >&2
+                            return 1
+                        fi
+                        shift ;;
+                esac
+            done
             wt_name=$(__wt_sanitize_name "$wt_name")
-            if [[ -z "$wt_name" || -z "$ref" ]]; then
-                echo "${_CT_INFO}Usage:${_CT_RESET} wt add <worktree-name> <ref> [remote]  (default remote: origin)"
+            if [[ -z "$ref" || -z "$wt_name" ]]; then
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt add <ref> --into <wt-name> [--remote <remote>]  (default remote: origin)"
                 return 1
             fi
             local wt_path="$WT_DIR/$wt_name"
@@ -1551,24 +1616,23 @@ SYNCHELP
             local target_path="" into_name="" branch=""
             while (( $# )); do
                 case "$1" in
+                    --ref)
+                        branch="$2"; shift 2 ;;
+                    --ref=*)
+                        branch="${1#--ref=}"; shift ;;
                     --into)
                         into_name="$2"; shift 2 ;;
                     --into=*)
                         into_name="${1#--into=}"; shift ;;
                     -h|--help)
-                        echo "${_CT_INFO}Usage:${_CT_RESET} wt merge <branch> [--into <worktree>]"; return 0 ;;
+                        echo "${_CT_INFO}Usage:${_CT_RESET} wt merge --ref <branch> [--into <worktree>]"; return 0 ;;
                     *)
-                        if [[ -z "$branch" ]]; then
-                            branch="$1"
-                        else
-                            echo "${_CT_BAD}wt merge:${_CT_RESET} unexpected arg: $1" >&2
-                            return 1
-                        fi
-                        shift ;;
+                        echo "${_CT_BAD}wt merge:${_CT_RESET} unexpected arg: $1" >&2
+                        return 1 ;;
                 esac
             done
             if [[ -z "$branch" ]]; then
-                echo "${_CT_INFO}Usage:${_CT_RESET} wt merge <branch> [--into <worktree>]"
+                echo "${_CT_INFO}Usage:${_CT_RESET} wt merge --ref <branch> [--into <worktree>]"
                 return 1
             fi
             if [[ -n "$into_name" ]]; then
@@ -1697,15 +1761,16 @@ SYNCHELP
 Usage: wt <command> [args]
 
 Commands:
-  push <worktree> [switch-to]          Current branch → worktree, main → [switch-to] (default: master)
+  push <worktree> [--switch-to <br>]   Current branch → worktree, main → --switch-to (default: master)
   pull <worktree>                      Worktree branch → main dir, remove worktree
-  swap <worktree> [new-worktree-name]  Swap main dir branch ↔ worktree
+  swap <worktree> [--into <new-wt>]    Swap main dir branch ↔ worktree
   fork --from <ref> --name <branch> [--into <wt>]
                                        Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
-  add <worktree> <ref> [remote]        Add <ref> (branch/tag/sha) as a new worktree
+  add <ref> --into <worktree> [--remote <r>]
+                                       Add <ref> (branch/tag/sha) as a new worktree (default remote: origin)
   rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt); auto-purges its bazel cache
   sync                                 Fetch origin once, fast-forward each worktree's branch to its upstream
-  merge <ref> [--into <worktree>]      Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
+  merge --ref <ref> [--into <worktree>] Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
   clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
   prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
   prune-branches [-f]                  fzf-pick local branches to delete (-d, prompts to -D); -f forces -D
@@ -2042,13 +2107,25 @@ elif [ -n "$BASH_VERSION" ]; then
                 fi
                 ;;
             push)
-                if (( COMP_CWORD == 3 )); then
+                # wt push <wt-name> [--switch-to <branch>]
+                local prev="${COMP_WORDS[COMP_CWORD-1]}"
+                if [[ "$prev" == "--switch-to" ]]; then
                     COMPREPLY=($(compgen -W "$(git -C "${MAIN_REPO:-$HOME}" branch --format='%(refname:short)' 2>/dev/null)" -- "$cur"))
+                elif (( COMP_CWORD > 2 )); then
+                    COMPREPLY=($(compgen -W "--switch-to" -- "$cur"))
                 fi
                 ;;
             add)
-                if (( COMP_CWORD == 3 )); then
+                # wt add <ref> --into <wt-name> [--remote <remote>]
+                local prev="${COMP_WORDS[COMP_CWORD-1]}"
+                if [[ "$prev" == "--remote" ]]; then
+                    COMPREPLY=($(compgen -W "$(git -C "${MAIN_REPO:-$HOME}" remote 2>/dev/null)" -- "$cur"))
+                elif [[ "$prev" == "--into" ]]; then
+                    :  # freeform new worktree name
+                elif (( COMP_CWORD == 2 )); then
                     COMPREPLY=($(compgen -W "$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)" -- "$cur"))
+                else
+                    COMPREPLY=($(compgen -W "--into --remote" -- "$cur"))
                 fi
                 ;;
             prune-branches)

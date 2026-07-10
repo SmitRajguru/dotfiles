@@ -1453,6 +1453,9 @@ SYNCHELP
             # entries rather than one giant line.
             # Uses the catppuccin-mocha semantic palette (_CT_*) defined
             # globally at the top of this file.
+            # Drop stale worktree admin records first (same self-heal as
+            # cd/rm/list) so the enumeration below only sees live worktrees.
+            __wt_prune_stale
             echo "${_CT_PHASE}[fetch]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: git fetch origin --prune"
             # Capture output then print, so sed doesn't mask the fetch's exit
             # status (a `git | sed` pipeline yields sed's status).
@@ -1503,6 +1506,16 @@ SYNCHELP
             _wt_sync_meta() {
                 # _wt_sync_meta <key> <value-colored>
                 printf '      %s%-9s%s %b\n' "${_CT_PATH}" "$1" "${_CT_RESET}" "$2"
+            }
+            _wt_head_meta() {
+                # HEAD context shown for every wt: commit subject + relative age.
+                # Uses %s (not %b) for the git-supplied text so subjects with
+                # backslashes render literally; matches _wt_sync_meta's layout.
+                local subj age
+                subj=$(git -C "$1" log -1 --format='%s' 2>/dev/null)
+                age=$(git -C "$1" log -1 --format='%cr' 2>/dev/null)
+                [[ -n "$subj" ]] && printf '      %s%-9s%s %s%s%s\n' "${_CT_PATH}" "commit" "${_CT_RESET}" "${_CT_SUBTEXT0}" "$subj" "${_CT_RESET}"
+                [[ -n "$age"  ]] && printf '      %s%-9s%s %s%s%s\n' "${_CT_PATH}" "age"    "${_CT_RESET}" "${_CT_SUBTEXT0}" "$age"  "${_CT_RESET}"
             }
             for wt_path in $wts; do
                 local label
@@ -1558,6 +1571,7 @@ SYNCHELP
                         dirty_detached=$(git -C "$wt_path" rev-parse --short HEAD 2>/dev/null)
                         [[ -n "$dirty_detached" ]] && _wt_sync_meta "sha" "${_CT_SHA}${dirty_detached}${_CT_RESET} ${_CT_PATH}(detached)${_CT_RESET}"
                     fi
+                    _wt_head_meta "$wt_path"
                     dirty_list+=("$label")
                     continue
                 fi
@@ -1568,6 +1582,7 @@ SYNCHELP
                     local detached_sha
                     detached_sha=$(git -C "$wt_path" rev-parse --short HEAD 2>/dev/null)
                     [[ -n "$detached_sha" ]] && _wt_sync_meta "sha" "${_CT_SHA}${detached_sha}${_CT_RESET}"
+                    _wt_head_meta "$wt_path"
                     detached_list+=("$label")
                     continue
                 fi
@@ -1579,6 +1594,7 @@ SYNCHELP
                     local_short=$(git -C "$wt_path" rev-parse --short HEAD 2>/dev/null)
                     _wt_sync_meta "branch" "${_CT_REF}${branch}${_CT_RESET}"
                     [[ -n "$local_short" ]] && _wt_sync_meta "sha" "${_CT_SHA}${local_short}${_CT_RESET}"
+                    _wt_head_meta "$wt_path"
                     no_upstream_list+=("$label ($branch)")
                     continue
                 fi
@@ -1627,8 +1643,9 @@ SYNCHELP
                     _wt_sync_meta "remote"   "${_CT_SHA}${remote_short}${_CT_RESET} ${_CT_PATH}(behind ${_CT_BAD}${n_behind}${_CT_PATH})${_CT_RESET}"
                     diverged_list+=("$label ($branch)")
                 fi
+                _wt_head_meta "$wt_path"
             done
-            unset -f _wt_sync_meta
+            unset -f _wt_sync_meta _wt_head_meta
             echo
             echo "${_CT_DONE}Done.${_CT_RESET}"
             # Grouped summary: one block per non-empty category. Categories
@@ -1655,6 +1672,22 @@ SYNCHELP
             _wt_sync_summary_block "detached"     "$_CT_BAD"  "${detached_list[@]}"
             _wt_sync_summary_block "dirty"        "$_CT_BAD"  "${dirty_list[@]}"
             unset -f _wt_sync_summary_block
+            # Local-branch count advisory — a nudge toward `wt prune-branches`
+            # when they pile up. Thresholds are generous for a worktree-heavy
+            # workflow (a handful of live wts is normal); tweak warn_at/bad_at.
+            local n_branches warn_at=15 bad_at=30 branch_color
+            # for-each-ref (not `git branch`) so a detached MAIN_REPO doesn't
+            # add a phantom "(HEAD detached ...)" line to the count.
+            n_branches=$(git -C "$MAIN_REPO" for-each-ref --format='%(refname:short)' refs/heads | wc -l)
+            n_branches=${n_branches// /}
+            if   (( n_branches >= bad_at ));  then branch_color="$_CT_BAD"
+            elif (( n_branches >= warn_at )); then branch_color="$_CT_WARN"
+            else                                   branch_color="$_CT_OK"
+            fi
+            echo
+            printf '%s%s local branches%s' "$branch_color" "$n_branches" "$_CT_RESET"
+            (( n_branches >= warn_at )) && printf ' %s→ consider `wt prune-branches`%s' "$_CT_PATH" "$_CT_RESET"
+            printf '\n'
             ;;
         merge)
             # Merge a ref (local branch, remote branch, tag, or SHA) into the

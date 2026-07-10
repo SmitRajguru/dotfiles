@@ -62,5 +62,6 @@
   "skipWorkflowUsageWarning": true,
   "theme": "dark",
   "teammateMode": "in-process",
+  "remoteControlAtStartup": false,
   "skipAutoPermissionPrompt": true
 }

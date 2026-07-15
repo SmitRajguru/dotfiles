@@ -109,6 +109,17 @@ This creates an ephemeral virtual environment — no global pollution, no broken
 
 If you removed headers, you have to also remove the relevant deps from the BUILD file. And the same goes for adding headers, you would need to add in the BUILD file deps. If you add headers to a .cpp file, you can add the deps to implementation_deps.
 
+# HTML / Visual Output
+
+Any HTML I generate or update — visual-explainer pages (diagrams, diff/plan reviews, slides, project recaps), dataviz output, or ad-hoc standalone HTML — **must include a light/dark theme toggle**. Requirements:
+
+- A visible control (button/switch) that flips between light and dark.
+- Default to the OS preference via `prefers-color-scheme`, then let the toggle override it.
+- Drive colors from CSS custom properties (or an equivalent single source) so both themes stay legible — never hard-code a single palette that only reads well one way.
+- Self-contained: the toggle works offline with no external requests (inline script/CSS), consistent with the "standalone HTML" goal.
+
+This applies even when the underlying skill's template doesn't add one — patch it in on generation.
+
 # Agent Teams (TeamCreate)
 
 Agent Teams is an experimental Claude Code feature for **orchestration with visibility**, not parallel speed. Use it when the user explicitly asks for a "team", "teammates", "swarm", or "agent team". For fire-and-forget parallel work, use bare `Agent` (subagents) instead — those don't need TeamCreate.

@@ -816,16 +816,23 @@ wt() {
     # fall back to age, since a real git index operation finishes in seconds
     # and anything older is almost certainly a crashed process. Prints the
     # lock's age in seconds as a second field for the caller to report.
-    __wt_index_lock_state() {
-        local lock="$1/.git" age now mtime
-        # In a linked worktree, $wt/.git is a file pointing at the admin dir;
-        # the index (and its lock) live there, not in the worktree.
-        if [[ -f "$lock" ]]; then
-            lock="${$(<"$1/.git")#gitdir: }"
+    # Resolve a worktree's index.lock path. In a linked worktree $wt/.git is a
+    # FILE containing "gitdir: <admin dir>" and the index lives in that admin
+    # dir; in MAIN_REPO $wt/.git is a DIRECTORY holding the index directly.
+    # Both cases appear in `wt sync`, which iterates MAIN_REPO too.
+    __wt_index_lock_path() {
+        local gitdot="$1/.git" admin
+        if [[ -f "$gitdot" ]]; then
+            admin="${$(<"$gitdot")#gitdir: }"
         else
-            lock="$1/.git"
+            admin="$gitdot"
         fi
-        lock="$lock/index.lock"
+        print -r -- "${admin}/index.lock"
+    }
+
+    __wt_index_lock_state() {
+        local lock age now mtime
+        lock=$(__wt_index_lock_path "$1")
         [[ -e "$lock" ]] || { print -r -- "none 0"; return 0; }
         now=$(date +%s)
         mtime=$(stat -c %Y "$lock" 2>/dev/null) || mtime=$now
@@ -1739,8 +1746,19 @@ SYNCHELP
                                 read -r lock_ans < /dev/tty
                             fi
                             if [[ "$lock_ans" == [yY]* ]]; then
-                                local lock_path
-                                lock_path="${$(<"$wt_path/.git")#gitdir: }/index.lock"
+                                local lock_path lock_recheck
+                                lock_path=$(__wt_index_lock_path "$wt_path")
+                                # The prompt above is an unbounded window in
+                                # which a real git process can legitimately take
+                                # the lock. Re-check before removing so we never
+                                # yank a live lock out from under one.
+                                lock_recheck=$(__wt_index_lock_state "$wt_path")
+                                if [[ "${lock_recheck%% *}" != "stale" ]]; then
+                                    echo "    ${_CT_BAD}lock is no longer stale (${lock_recheck%% *}); leaving it alone${_CT_RESET}" >&2
+                                    locked_list+=("$label ($branch)")
+                                    _wt_head_meta "$wt_path"
+                                    continue
+                                fi
                                 if rm -f "$lock_path"; then
                                     echo "    ${_CT_OK}removed stale lock${_CT_RESET}"
                                 else

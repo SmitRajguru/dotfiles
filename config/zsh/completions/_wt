@@ -22,7 +22,7 @@ _wt_value_flag() {
 
 if (( CURRENT == 2 )); then
     local -a vals disp
-    vals=(cd push pull swap fork add rm sync merge clean prune prune-branches list)
+    vals=(cd push pull swap fork add rm sync merge clean prune prune-branches prune-worktrees list)
     disp=(
         "cd     -- Jump to a worktree by name or branch (no arg → list)"
         "push   -- Current branch → worktree, main → switch-to"
@@ -30,12 +30,13 @@ if (( CURRENT == 2 )); then
         "swap   -- Swap main dir branch ↔ worktree"
         "fork   -- Branch off <ref> into new or existing worktree"
         "add    -- Add <ref> (branch/tag/sha) as a new worktree"
-        "rm     -- Remove worktree (auto-purges its bazel cache)"
+        "rm     -- Remove worktree (prompts to delete its branch; auto-purges its bazel cache)"
         "sync   -- Run \`git sync\` in every clean worktree"
         "merge  -- Merge <ref> (branch/tag/sha) into a worktree"
         "clean  -- Discard unstaged + remove untracked (IRREVERSIBLE)"
         "prune  -- Remove bazel output_base dirs for dead worktrees"
         "prune-branches -- fzf-pick local branches to delete (-f forces -D)"
+        "prune-worktrees -- fzf-pick worktrees to remove (runs wt rm on each)"
         "list   -- List all worktrees"
     )
     compadd -l -d disp -a vals
@@ -229,6 +230,19 @@ case "${words[2]}" in
             fdisp=(
                 "-f      -- Force-delete the selection with -D"
                 "--force -- Force-delete the selection with -D"
+                "-h      -- Show usage"
+                "--help  -- Show usage"
+            )
+            compadd -l -d fdisp -a flags
+        fi
+        ;;
+    prune-worktrees)
+        # `wt prune-worktrees` — worktree selection is interactive (fzf), so
+        # only the help flag is completable.
+        if (( CURRENT == 3 )); then
+            local -a flags fdisp
+            flags=(-h --help)
+            fdisp=(
                 "-h      -- Show usage"
                 "--help  -- Show usage"
             )

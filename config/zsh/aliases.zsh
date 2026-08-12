@@ -742,11 +742,14 @@ zsh_directory_name_functions=(${zsh_directory_name_functions:#_zdn_repo} _zdn_re
 #                                           Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
 #   wt add <ref> --into <worktree> [--remote <r>]
 #                                           Add <ref> (branch/tag/sha) as a new worktree (default remote: origin)
-#   wt rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt); auto-purges its bazel cache
+#   wt rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt), then prompts to
+#                                           delete its local branch; auto-purges its bazel cache
 #   wt sync                                 Fetch origin once + `hub sync` in MAIN_REPO, fast-forward each worktree's branch to its upstream
 #   wt merge --ref <ref> [--into <worktree>] Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
 #   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
 #   wt prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
+#   wt prune-branches [-f]                  fzf-pick local branches to delete (-d, prompts to -D); -f forces -D
+#   wt prune-worktrees                      fzf-pick worktrees to remove; runs `wt rm` on each
 #   wt list                                 List all worktrees
 # -------------------------------------------------------------------
 wt() {
@@ -1177,6 +1180,42 @@ FORKHELP
                 read -r ans
                 [[ "$ans" == [yY]* ]] || { echo "${_CT_BAD}Aborted.${_CT_RESET}" >&2; return 1; }
                 git -C "$MAIN_REPO" worktree remove --force "$wt_path" || return 1
+            fi
+            # The removed worktree's branch is now checked out nowhere, so it's
+            # deletable. Offer it here to save a follow-up `wt prune-branches`.
+            # Interactive only: a scripted caller keeps the branch, as before.
+            # Safe `-d` first; only escalate to `-D` on an explicit second yes,
+            # so unmerged commits are never dropped silently.
+            if [[ -n "$target_branch" ]] && [[ -o interactive ]]; then
+                local del_ans branch_out branch_rc
+                printf "${_CT_PROMPT}Delete local branch ${_CT_REF}$target_branch${_CT_PROMPT}?${_CT_RESET} [y/N]: " >&2
+                # Read from the terminal, not inherited stdin, so a redirected
+                # stdin can't auto-answer a branch deletion.
+                read -r del_ans < /dev/tty
+                if [[ "$del_ans" == [yY]* ]]; then
+                    # LC_ALL=C pins git's stderr to English so the
+                    # "not fully merged" test below can't be defeated by a
+                    # localized message (which would skip the -D offer and
+                    # report a generic failure instead).
+                    branch_out=$(LC_ALL=C git -C "$MAIN_REPO" branch -d "$target_branch" 2>&1); branch_rc=$?
+                    if (( branch_rc == 0 )); then
+                        echo "  ${_CT_OK}deleted branch${_CT_RESET} ${_CT_REF}$target_branch${_CT_RESET}"
+                    elif [[ "$branch_out" == *"not fully merged"* ]]; then
+                        printf "  ${_CT_WARN}not fully merged.${_CT_RESET} ${_CT_PROMPT}Force-delete (${_CT_WARN}-D${_CT_PROMPT})?${_CT_RESET} [y/N]: " >&2
+                        read -r del_ans < /dev/tty
+                        if [[ "$del_ans" == [yY]* ]]; then
+                            if git -C "$MAIN_REPO" branch -D "$target_branch" >/dev/null 2>&1; then
+                                echo "  ${_CT_OK}force-deleted branch${_CT_RESET} ${_CT_REF}$target_branch${_CT_RESET}"
+                            else
+                                echo "  ${_CT_BAD}failed to delete branch${_CT_RESET} ${_CT_REF}$target_branch${_CT_RESET}" >&2
+                            fi
+                        else
+                            echo "  ${_CT_INFO}kept branch${_CT_RESET} ${_CT_REF}$target_branch${_CT_RESET}"
+                        fi
+                    else
+                        echo "  ${_CT_BAD}failed to delete branch${_CT_RESET} ${_CT_REF}$target_branch${_CT_RESET}: ${_CT_PATH}${branch_out#error: }${_CT_RESET}" >&2
+                    fi
+                fi
             fi
             # Offer to remove fetch refspecs that were covering the removed
             # worktree's branch. Useful when an exact per-branch refspec was
@@ -1881,6 +1920,71 @@ SYNCHELP
                 fi
             fi
             ;;
+        prune-worktrees)
+            # Interactively remove worktrees. fzf multi-select (Tab to mark)
+            # with a status + log preview; each pick is handed to `wt rm`, so
+            # the dirty-force prompt, branch-delete prompt, refspec cleanup and
+            # bazel purge all behave exactly as a standalone `wt rm` does.
+            while (( $# )); do
+                case "$1" in
+                    -h|--help)
+                        echo "${_CT_INFO}Usage:${_CT_RESET} wt prune-worktrees   fzf-pick worktrees to remove (runs wt rm on each)"
+                        return 0 ;;
+                    *) echo "${_CT_BAD}wt prune-worktrees:${_CT_RESET} unexpected arg: $1" >&2; return 1 ;;
+                esac
+            done
+            command -v fzf >/dev/null 2>&1 || { echo "${_CT_BAD}wt prune-worktrees:${_CT_RESET} fzf not found" >&2; return 1; }
+            __wt_prune_stale
+            # Same source of truth as completion and `wt cd`, so the picker
+            # lists exactly what those do. --linked excludes MAIN_REPO: the main
+            # repo is not a removable worktree.
+            local -a vals disp
+            _wt_worktree_compdata --linked
+            (( ${#vals} )) || { echo "${_CT_INFO}wt prune-worktrees:${_CT_RESET} no linked worktrees."; return 0; }
+            # Tab-separated "name<TAB>branch" so the name survives a branch
+            # containing spaces, and fzf can show both columns while {1} still
+            # yields just the name. (fzf substitutes {1} single-quoted, so a
+            # space in either field is safe in --preview. A literal tab in a
+            # worktree dir name would split the record, but these names come
+            # from __wt_sanitize_name / directory names under $WT_DIR.)
+            local list="" i
+            for (( i=1; i<=${#vals}; i++ )); do
+                list+="${vals[i]}"$'\t'"${disp[i]#*-- }"$'\n'
+            done
+            local selected fzf_rc
+            selected=$(print -rn -- "$list" \
+                | fzf -m --tmux center,85%,80% --prompt='remove worktree> ' \
+                      --delimiter=$'\t' --with-nth=1,2 \
+                      --header='Tab=mark  Enter=confirm  (each pick runs `wt rm`)' \
+                      --preview-window='down,45%,wrap' \
+                      --preview="git -C ${(q)WT_DIR}/{1} status --short --branch 2>/dev/null | head -20; echo; git -C ${(q)WT_DIR}/{1} log --oneline --decorate --color=always -8 2>/dev/null")
+            fzf_rc=$?
+            # fzf: 0=selected, 1=no match, 130=interrupt/ESC → nothing to do.
+            if (( fzf_rc == 1 || fzf_rc == 130 )); then
+                return 0
+            elif (( fzf_rc != 0 )); then
+                echo "${_CT_BAD}wt prune-worktrees:${_CT_RESET} fzf exited with $fzf_rc" >&2
+                return $fzf_rc
+            fi
+            [[ -z "$selected" ]] && { echo "${_CT_INFO}wt prune-worktrees:${_CT_RESET} nothing selected."; return 0; }
+            local -a picks
+            picks=("${(f)selected}")
+            # One `wt rm` per pick. A failure or aborted prompt on one worktree
+            # must not stop the rest, so tally and report instead of returning
+            # early.
+            local pick pick_name failed=0
+            for pick in "${picks[@]}"; do
+                pick_name="${pick%%$'\t'*}"
+                [[ -z "$pick_name" ]] && continue
+                echo
+                wt rm "$pick_name" || (( failed++ ))
+            done
+            if (( failed )); then
+                echo
+                echo "${_CT_WARN}wt prune-worktrees:${_CT_RESET} $failed of ${#picks} removal(s) failed or were aborted."
+                return 1
+            fi
+            ;;
         *)
             cat <<'USAGE'
 Usage: wt <command> [args]
@@ -1893,12 +1997,14 @@ Commands:
                                        Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
   add <ref> --into <worktree> [--remote <r>]
                                        Add <ref> (branch/tag/sha) as a new worktree (default remote: origin)
-  rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt); auto-purges its bazel cache
+  rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt), then
+                                       prompts to delete its local branch; auto-purges its bazel cache
   sync                                 Fetch origin once, fast-forward each worktree's branch to its upstream
   merge --ref <ref> [--into <worktree>] Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
   clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
   prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
   prune-branches [-f]                  fzf-pick local branches to delete (-d, prompts to -D); -f forces -D
+  prune-worktrees                      fzf-pick worktrees to remove; runs `wt rm` on each
   list                                 List all worktrees
 USAGE
             return 1
@@ -2223,7 +2329,7 @@ elif [ -n "$BASH_VERSION" ]; then
         local cur="${COMP_WORDS[COMP_CWORD]}"
         local subcmd="${COMP_WORDS[1]}"
         if (( COMP_CWORD == 1 )); then
-            COMPREPLY=($(compgen -W "cd push pull swap add rm prune-branches list" -- "$cur"))
+            COMPREPLY=($(compgen -W "cd push pull swap add rm prune-branches prune-worktrees list" -- "$cur"))
             return
         fi
         case "$subcmd" in
@@ -2265,6 +2371,11 @@ elif [ -n "$BASH_VERSION" ]; then
             prune-branches)
                 if (( COMP_CWORD == 2 )); then
                     COMPREPLY=($(compgen -W "-f --force -h --help" -- "$cur"))
+                fi
+                ;;
+            prune-worktrees)
+                if (( COMP_CWORD == 2 )); then
+                    COMPREPLY=($(compgen -W "-h --help" -- "$cur"))
                 fi
                 ;;
         esac

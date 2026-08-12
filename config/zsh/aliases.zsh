@@ -744,7 +744,9 @@ zsh_directory_name_functions=(${zsh_directory_name_functions:#_zdn_repo} _zdn_re
 #                                           Add <ref> (branch/tag/sha) as a new worktree (default remote: origin)
 #   wt rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt), then prompts to
 #                                           delete its local branch; auto-purges its bazel cache
-#   wt sync                                 Fetch origin once + `hub sync` in MAIN_REPO, fast-forward each worktree's branch to its upstream
+#   wt sync                                 Fetch origin once + `hub sync` in MAIN_REPO, fast-forward each worktree's branch to its upstream.
+#                                           Skips worktrees with a held index.lock, offers to clear stale ones, and keeps going past a
+#                                           failed ff (reported under `failed`; sync then exits non-zero)
 #   wt merge --ref <ref> [--into <worktree>] Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
 #   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
 #   wt prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
@@ -808,6 +810,39 @@ wt() {
     # read/list arms so those self-heal. Safe here: every worktree is local
     # under ~/worktrees, so a missing dir always means deleted — not the
     # unmounted-network-path case that `git worktree prune` warns about.
+    # Classify a worktree's index.lock: prints "none", "held", or "stale".
+    # A lock is only "stale" when nothing has it open — an in-flight git
+    # command's lock must be left alone. lsof is authoritative; without it we
+    # fall back to age, since a real git index operation finishes in seconds
+    # and anything older is almost certainly a crashed process. Prints the
+    # lock's age in seconds as a second field for the caller to report.
+    __wt_index_lock_state() {
+        local lock="$1/.git" age now mtime
+        # In a linked worktree, $wt/.git is a file pointing at the admin dir;
+        # the index (and its lock) live there, not in the worktree.
+        if [[ -f "$lock" ]]; then
+            lock="${$(<"$1/.git")#gitdir: }"
+        else
+            lock="$1/.git"
+        fi
+        lock="$lock/index.lock"
+        [[ -e "$lock" ]] || { print -r -- "none 0"; return 0; }
+        now=$(date +%s)
+        mtime=$(stat -c %Y "$lock" 2>/dev/null) || mtime=$now
+        age=$(( now - mtime ))
+        if command -v lsof >/dev/null 2>&1; then
+            if lsof -- "$lock" >/dev/null 2>&1; then
+                print -r -- "held $age"
+            else
+                print -r -- "stale $age"
+            fi
+        elif (( age >= 120 )); then
+            print -r -- "stale $age"
+        else
+            print -r -- "held $age"
+        fi
+    }
+
     __wt_prune_stale() {
         # Safety: if the worktrees root itself is gone (e.g. an unmounted
         # mount), every entry would look prunable — bail rather than wipe all
@@ -1546,7 +1581,8 @@ SYNCHELP
             local wt_path
             # Per-category lists for the grouped summary at the end.
             local -a ff_list uptodate_list ahead_list diverged_list \
-                     no_upstream_list detached_list dirty_list
+                     no_upstream_list detached_list dirty_list \
+                     locked_list failed_list
             while IFS= read -r wt_path; do
                 [[ -z "$wt_path" ]] && continue
                 wts+=("$wt_path")
@@ -1682,13 +1718,56 @@ SYNCHELP
                     if (( dry_run )); then
                         echo "    ${_CT_PATH}(dry-run: would fast-forward)${_CT_RESET}"
                     else
+                        # A leftover index.lock makes the ff fail with git's
+                        # "Another git process seems to be running" error. Check
+                        # first so the cause is named instead of surfacing as a
+                        # generic rc=1, and offer to clear it when nothing holds
+                        # it (crashed process / IDE git refresh killed midway).
+                        local lock_state lock_age lock_info
+                        lock_info=$(__wt_index_lock_state "$wt_path")
+                        lock_state="${lock_info%% *}"; lock_age="${lock_info##* }"
+                        if [[ "$lock_state" == "held" ]]; then
+                            echo "  ${_CT_BAD}[locked]${_CT_RESET} ${_CT_REF}$branch${_CT_RESET} ${_CT_PATH}(index.lock held, ${lock_age}s old — another git process is running)${_CT_RESET}"
+                            locked_list+=("$label ($branch)")
+                            _wt_head_meta "$wt_path"
+                            continue
+                        elif [[ "$lock_state" == "stale" ]]; then
+                            echo "  ${_CT_WARN}[locked]${_CT_RESET} ${_CT_REF}$branch${_CT_RESET} ${_CT_PATH}(stale index.lock, ${lock_age}s old, no holder)${_CT_RESET}"
+                            local lock_ans=""
+                            if [[ -o interactive ]]; then
+                                printf "    ${_CT_PROMPT}Remove stale lock and fast-forward?${_CT_RESET} [y/N]: " >&2
+                                read -r lock_ans < /dev/tty
+                            fi
+                            if [[ "$lock_ans" == [yY]* ]]; then
+                                local lock_path
+                                lock_path="${$(<"$wt_path/.git")#gitdir: }/index.lock"
+                                if rm -f "$lock_path"; then
+                                    echo "    ${_CT_OK}removed stale lock${_CT_RESET}"
+                                else
+                                    echo "    ${_CT_BAD}failed to remove${_CT_RESET} ${_CT_PATH}$lock_path${_CT_RESET}" >&2
+                                    locked_list+=("$label ($branch)")
+                                    _wt_head_meta "$wt_path"
+                                    continue
+                                fi
+                            else
+                                locked_list+=("$label ($branch)")
+                                _wt_head_meta "$wt_path"
+                                continue
+                            fi
+                        fi
                         local merge_output merge_rc
                         merge_output=$(_capture_with_color git -C "$wt_path" merge --ff-only "$upstream")
                         merge_rc=$?
                         [[ -n "$merge_output" ]] && printf '%s\n' "$merge_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
                         if (( merge_rc != 0 )); then
-                            echo "  ${_CT_BAD}[ff] failed (rc=$merge_rc); aborting wt sync${_CT_RESET}" >&2
-                            return 1
+                            # Don't abort the sweep: one unmergeable worktree
+                            # would otherwise hide the state of every worktree
+                            # after it. Tally and keep going; `wt sync` returns
+                            # non-zero at the end if anything failed.
+                            echo "  ${_CT_BAD}[ff] failed (rc=$merge_rc); continuing${_CT_RESET}" >&2
+                            failed_list+=("$label ($branch) — ff rc=$merge_rc")
+                            _wt_head_meta "$wt_path"
+                            continue
                         fi
                     fi
                     ff_list+=("$label ($branch)")
@@ -1713,9 +1792,12 @@ SYNCHELP
             echo
             echo "${_CT_DONE}Done.${_CT_RESET}"
             # Headline: at-a-glance did-anything-move line + wall-clock duration.
-            printf '%s⏱ %d worktree(s) in %ds%s %s(ff %d · dirty %d)%s\n' \
+            printf '%s⏱ %d worktree(s) in %ds%s %s(ff %d · dirty %d)%s' \
                 "${_CT_PHASE}" ${#wts} $(( SECONDS - t0 )) "${_CT_RESET}" \
                 "${_CT_PATH}" ${#ff_list} ${#dirty_list} "${_CT_RESET}"
+            (( ${#locked_list} )) && printf ' %s(locked %d)%s' "${_CT_WARN}" ${#locked_list} "${_CT_RESET}"
+            (( ${#failed_list} )) && printf ' %s(failed %d)%s' "${_CT_BAD}"  ${#failed_list} "${_CT_RESET}"
+            printf '\n'
             # Grouped summary: one block per non-empty category. Categories
             # with zero members are omitted entirely so the summary scales
             # with what actually happened. Category color matches the
@@ -1739,6 +1821,8 @@ SYNCHELP
             _wt_sync_summary_block "no-upstream"  "$_CT_WARN" "${no_upstream_list[@]}"
             _wt_sync_summary_block "detached"     "$_CT_BAD"  "${detached_list[@]}"
             _wt_sync_summary_block "dirty"        "$_CT_BAD"  "${dirty_list[@]}"
+            _wt_sync_summary_block "locked"       "$_CT_WARN" "${locked_list[@]}"
+            _wt_sync_summary_block "failed"       "$_CT_BAD"  "${failed_list[@]}"
             # Likely-merged branches: our `fetch --prune` deletes origin/<branch>
             # for PRs that were squash-merged and had their remote branch
             # deleted, which leaves the local branch tracking a now-`gone`
@@ -1769,6 +1853,10 @@ SYNCHELP
             (( ${#gone_branches} > 0 )) && printf ' %s— %d look merged (remote gone)%s' "$_CT_MAUVE" ${#gone_branches} "$_CT_RESET"
             (( n_branches >= warn_at || ${#gone_branches} > 0 )) && printf ' %s→ consider `wt prune-branches`%s' "$_CT_PATH" "$_CT_RESET"
             printf '\n'
+            # Non-zero if any worktree failed to fast-forward, so callers and
+            # `$?` still see a problem even though the sweep ran to completion.
+            (( ${#failed_list} )) && return 1
+            return 0
             ;;
         merge)
             # Merge a ref (local branch, remote branch, tag, or SHA) into the

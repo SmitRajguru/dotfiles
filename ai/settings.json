@@ -9,6 +9,7 @@
     "defaultMode": "auto"
   },
   "model": "opus[1m]",
+  "effortLevel": "max",
   "hooks": {
     "Stop": [
       {

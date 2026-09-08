@@ -668,15 +668,32 @@ ssh-setup() {
 }
 
 # -------------------------------------------------------------------
-# claude — wrapper that ensures ssh-agent has a key before launch.
-# Bypass with `command claude` if you really want to launch without keys.
+# claude — wrapper that ensures ssh-agent has a key before launch, then pins the
+# preferred model and effort. Those go on the command line rather than in
+# settings.json because a managed-settings layer, where one is deployed,
+# outranks settings.json but not the flags.
+#
+# Subcommands (`claude mcp`, `claude doctor`, ...) manage the install rather
+# than start a session, and some reject these flags outright, so they are left
+# alone. Passing --model/--effort yourself wins; `command claude` bypasses the
+# wrapper entirely, keys and all.
 # -------------------------------------------------------------------
 claude() {
     if ! _ensure_ssh_key; then
         print -u2 -- "${_CT_BAD}ssh-add failed; not launching claude.${_CT_RESET}"
         return 1
     fi
-    command claude "$@"
+    local -a args=("$@") pins
+    local -a subcommands=(
+        agents attach auth auto-mode doctor gateway import install logs mcp
+        plugin plugins project respawn rm setup-token stop kill ultrareview
+        update upgrade
+    )
+    if (( ! ${subcommands[(Ie)${1-}]} )); then
+        (( ${args[(I)(--model|--model=*)]} ))  || pins+=(--model 'opus[1m]')
+        (( ${args[(I)(--effort|--effort=*)]} )) || pins+=(--effort max)
+    fi
+    command claude "${pins[@]}" "$@"
 }
 
 # -------------------------------------------------------------------

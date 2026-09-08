@@ -71,7 +71,18 @@ FRONTMATTER
 cat "$REPO/ai/CLAUDE.md" >> "$CURSOR_DIR/rules/personal.mdc"
 
 echo "[ai] ccstatusline"
-link "$REPO/ai/ccstatusline/settings.json" "$XDG_CONFIG_HOME/ccstatusline/settings.json"
+# An overlay repo may replace this symlink with a real file so it can merge in
+# widgets this repo doesn't ship. Re-symlinking would silently drop them, so
+# only claim the path when the live file carries no widget ids beyond ours.
+ccsl_widget_ids() { jq -r '[.lines[]?[]?.id // empty] | unique | .[]' "$1" 2>/dev/null; }
+CCSL_SRC="$REPO/ai/ccstatusline/settings.json"
+CCSL_DST="$XDG_CONFIG_HOME/ccstatusline/settings.json"
+if [ -f "$CCSL_DST" ] && [ ! -L "$CCSL_DST" ] &&
+   [ -n "$(comm -13 <(ccsl_widget_ids "$CCSL_SRC") <(ccsl_widget_ids "$CCSL_DST"))" ]; then
+  echo "  - $CCSL_DST left as-is (real file carrying widgets this repo doesn't own)"
+else
+  link "$CCSL_SRC" "$CCSL_DST"
+fi
 
 echo "[config] zsh (XDG)"
 link_dir_contents "$REPO/config/zsh" "$XDG_CONFIG_HOME/zsh"

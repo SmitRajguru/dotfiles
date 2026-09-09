@@ -9,7 +9,6 @@
     "defaultMode": "auto"
   },
   "model": "opus[1m]",
-  "effortLevel": "max",
   "hooks": {
     "Stop": [
       {
@@ -64,5 +63,10 @@
   "theme": "dark",
   "teammateMode": "in-process",
   "remoteControlAtStartup": false,
-  "skipAutoPermissionPrompt": true
+  "skipAutoPermissionPrompt": true,
+  "modelSettings": {
+    "claude-opus-5": {
+      "effortLevel": "xhigh"
+    }
+  }
 }

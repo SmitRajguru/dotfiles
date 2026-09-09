@@ -691,7 +691,7 @@ claude() {
     )
     if (( ! ${subcommands[(Ie)${1-}]} )); then
         (( ${args[(I)(--model|--model=*)]} ))  || pins+=(--model 'opus[1m]')
-        (( ${args[(I)(--effort|--effort=*)]} )) || pins+=(--effort max)
+        (( ${args[(I)(--effort|--effort=*)]} )) || pins+=(--effort xhigh)
     fi
     command claude "${pins[@]}" "$@"
 }

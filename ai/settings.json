@@ -58,15 +58,15 @@
     }
   },
   "alwaysThinkingEnabled": true,
+  "modelSettings": {
+    "claude-opus-5": {
+      "effortLevel": "xhigh"
+    }
+  },
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "theme": "dark",
   "teammateMode": "in-process",
   "remoteControlAtStartup": false,
-  "skipAutoPermissionPrompt": true,
-  "modelSettings": {
-    "claude-opus-5": {
-      "effortLevel": "xhigh"
-    }
-  }
+  "skipAutoPermissionPrompt": true
 }

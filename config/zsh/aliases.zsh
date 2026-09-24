@@ -753,20 +753,21 @@ zsh_directory_name_functions=(${zsh_directory_name_functions:#_zdn_repo} _zdn_re
 # -------------------------------------------------------------------
 # wt — Worktree management: push, pull, swap, fork, add, rm, sync, merge, clean, prune
 #   wt push <worktree> [--switch-to <br>]   Current branch → worktree, main → --switch-to (default: master)
-#   wt pull <worktree>                      Worktree branch → main dir, remove worktree
-#   wt swap <worktree> [--into <new-wt>]    Swap main dir branch ↔ worktree
+#   wt pull <worktree>                      Worktree branch → main dir, remove worktree; auto-purges its bazel + fix-deps caches
+#   wt swap <worktree> [--into <new-wt>]    Swap main dir branch ↔ worktree; auto-purges the removed worktree's caches
+#                                           unless --into re-creates the same path
 #   wt fork --from <ref> --name <branch> [--into <wt>]
 #                                           Branch off <ref> (wt/branch/tag/sha) into new or existing worktree
 #   wt add <ref> --into <worktree> [--remote <r>]
 #                                           Add <ref> (branch/tag/sha) as a new worktree (default remote: origin)
 #   wt rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt), then prompts to
-#                                           delete its local branch; auto-purges its bazel cache
+#                                           delete its local branch; auto-purges its bazel + fix-deps caches
 #   wt sync                                 Fetch origin once + `hub sync` in MAIN_REPO, fast-forward each worktree's branch to its upstream.
 #                                           Skips worktrees with a held index.lock, offers to clear stale ones, and keeps going past a
 #                                           failed ff (reported under `failed`; sync then exits non-zero)
 #   wt merge --ref <ref> [--into <worktree>] Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
 #   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
-#   wt prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
+#   wt prune [-y] [--sudo]                  Remove bazel output_bases + fix-deps caches for worktrees that no longer exist
 #   wt prune-branches [-f]                  fzf-pick local branches to delete (-d, prompts to -D); -f forces -D
 #   wt prune-worktrees                      fzf-pick worktrees to remove; runs `wt rm` on each
 #   wt list                                 List all worktrees
@@ -884,6 +885,119 @@ wt() {
         (( $2 >= 2 )) || { print -u2 -- "${_CT_BAD}wt:${_CT_RESET} $1 requires a value"; return 1; }
     }
 
+    # Cache helpers shared by rm/pull/swap (__wt_purge_caches) and prune.
+    # Two cache kinds, both keyed by a 32-hex dir name:
+    #   bazel:    ~/.cache/bazel/_bazel_$USER/<md5>/  (an output_base)
+    #   fix-deps: ~/.cache/fix-deps/<digest>/         (cache/ + out/{build,iwyu,query}/
+    #             output_bases; driving's devx/scripts/fix-deps/link_to_cache.sh)
+
+    # fix-deps cache key for a workspace realpath. link_to_cache.sh hashes
+    # `echo "$ws"`, trailing newline included; `print -r` emits the same bytes.
+    __wt_fixdeps_digest() {
+        local sum
+        sum=$(print -r -- "$1" | md5sum) || return 1
+        print -r -- "${sum%% *}"
+    }
+
+    # Workspace paths recorded by a cache dir's output_base(s), into $reply:
+    # its own DO_NOT_BUILD_HERE (bazel) or out/*/DO_NOT_BUILD_HERE (fix-deps).
+    __wt_cache_workspaces() {
+        local marker
+        reply=()
+        for marker in "$1"/DO_NOT_BUILD_HERE(N) "$1"/out/*/DO_NOT_BUILD_HERE(N); do
+            reply+=("$(<"$marker")")
+        done
+    }
+
+    # True when every given workspace path is gone. An empty marker means the
+    # workspace is unknown, so it counts as still alive.
+    __wt_workspaces_gone() {
+        local ws
+        for ws in "$@"; do
+            [[ -n "$ws" && ! -e "$ws" ]] || return 1
+        done
+        return 0
+    }
+
+    # Normalized --output_base of every running process, into $reply. A bazel
+    # server always gets the `=` form from its client.
+    __wt_busy_output_bases() {
+        local line ob
+        reply=()
+        for line in "${(@f)$(ps -eww -o args= 2>/dev/null)}"; do
+            [[ "$line" == *--output_base=* ]] || continue
+            ob="${${line#*--output_base=}%% *}"
+            reply+=("${ob:A}")
+        done
+    }
+
+    # __wt_cache_in_use <dir> <busy-output-base>... — true when a running
+    # process uses <dir> itself or one of its out/<mode> output_bases.
+    __wt_cache_in_use() {
+        local dir="${1:A}" ob
+        shift
+        for ob in "$@"; do
+            [[ "$ob" == "$dir" || "${ob:h}" == "$dir/out" ]] && return 0
+        done
+        return 1
+    }
+
+    # __wt_rm_cache <dir> [sudo]. chmod first: bazel makes action outputs
+    # read-only, so a plain rm -rf fails partway.
+    __wt_rm_cache() {
+        local dir="$1" sudo_cmd="$2"
+        $sudo_cmd chmod -R u+w "${dir:?}" 2>/dev/null
+        $sudo_cmd rm -rf "${dir:?}"
+    }
+
+    # __wt_purge_caches <realpath> <digest> — delete the bazel output_base(s)
+    # and fix-deps cache of a worktree that rm/pull/swap just removed. Both
+    # args must be captured BEFORE `git worktree remove`: the realpath can't
+    # be resolved once the dir is gone. Matches fix-deps by digest or by a
+    # marker; bazel by marker. No-op if the path exists again (a same-name
+    # swap re-creates it, so its caches are still live).
+    __wt_purge_caches() {
+        local real="$1" digest="$2"
+        if [[ -e "$real" ]]; then
+            echo "  ${_CT_INFO}kept caches${_CT_RESET} (${_CT_PATH}$real${_CT_RESET} exists again)"
+            return 0
+        fi
+        local bazel_root="$HOME/.cache/bazel/_bazel_$USER" fd_root="$HOME/.cache/fix-deps"
+        local -aU cands
+        local -a busy reply
+        local d ws kind
+        for d in "$bazel_root"/*(N/) "$fd_root"/*(N/); do
+            [[ "${d:t}" =~ ^[0-9a-f]{32}$ ]] || continue
+            if [[ "$d" == "$fd_root/$digest" ]]; then
+                cands+=("$d")
+                continue
+            fi
+            __wt_cache_workspaces "$d"
+            for ws in "${reply[@]}"; do
+                if [[ -n "$ws" && "${ws:A}" == "$real" ]]; then
+                    cands+=("$d")
+                    break
+                fi
+            done
+        done
+        (( ${#cands} )) || return 0
+        __wt_busy_output_bases
+        busy=("${reply[@]}")
+        for d in "${cands[@]}"; do
+            [[ "$d" == "$fd_root"/* ]] && kind="fix-deps" || kind="bazel"
+            __wt_cache_workspaces "$d"
+            if (( ${#reply} )) && ! __wt_workspaces_gone "${reply[@]}"; then
+                echo "  ${_CT_WARN}kept $kind cache${_CT_RESET} ${_CT_PATH}$d${_CT_RESET} (a recorded workspace still exists)"
+            elif __wt_cache_in_use "$d" "${busy[@]}"; then
+                echo "  ${_CT_WARN}kept $kind cache${_CT_RESET} ${_CT_PATH}$d${_CT_RESET} (in use by a running bazel server)"
+            elif __wt_rm_cache "$d"; then
+                echo "  ${_CT_OK}purged $kind cache:${_CT_RESET} ${_CT_PATH}$d${_CT_RESET}"
+            else
+                echo "  ${_CT_BAD}failed to purge${_CT_RESET} ${_CT_PATH}$d${_CT_RESET} (try \`wt prune --sudo\`)" >&2
+            fi
+        done
+    }
+
     case "$action" in
         cd|goto)
             # Jump to a worktree by its directory name, "main"/main-repo
@@ -963,8 +1077,11 @@ wt() {
             target_branch=$(__wt_branch "$wt_path")
             [[ -z "$target_branch" ]] && { echo "${_CT_BAD}Error:${_CT_RESET} worktree is in detached HEAD"; return 1; }
             echo "${_CT_PHASE}pull:${_CT_RESET} $target_branch → main dir (removing ~/worktrees/$wt_name)"
+            local wt_real="${wt_path:A}" wt_digest
+            wt_digest=$(__wt_fixdeps_digest "$wt_real")
             git worktree remove "$wt_path" || return 1
             git -C "$MAIN_REPO" checkout "$target_branch" || return 1
+            __wt_purge_caches "$wt_real" "$wt_digest"
             echo "${_CT_DONE}Done.${_CT_RESET} main=$target_branch"
             ;;
         swap)
@@ -1019,9 +1136,12 @@ wt() {
             echo "${_CT_PHASE}swap:${_CT_RESET} main (${_CT_REF}$cur_branch${_CT_RESET}) ↔ ${_CT_PATH}~/worktrees/$wt_name${_CT_RESET} (${_CT_REF}$target_branch${_CT_RESET})"
             echo "  main → ${_CT_REF}$target_branch${_CT_RESET}"
             echo "  ${_CT_PATH}~/worktrees/$new_wt_name${_CT_RESET} → ${_CT_REF}$cur_branch${_CT_RESET}"
+            local wt_real="${wt_path:A}" wt_digest
+            wt_digest=$(__wt_fixdeps_digest "$wt_real")
             git worktree remove "$wt_path" || return 1
             git -C "$MAIN_REPO" checkout "$target_branch" || return 1
             git worktree add "$WT_DIR/$new_wt_name" "$cur_branch" || return 1
+            __wt_purge_caches "$wt_real" "$wt_digest"
             echo "${_CT_DONE}Done.${_CT_RESET}"
             ;;
         fork)
@@ -1228,6 +1348,8 @@ FORKHELP
             local target_branch
             target_branch=$(__wt_branch "$wt_path")
             echo "${_CT_PHASE}rm:${_CT_RESET} removing ~/worktrees/$wt_name (${target_branch:-detached})"
+            local wt_real="${wt_path:A}" wt_digest
+            wt_digest=$(__wt_fixdeps_digest "$wt_real")
             if (( force )); then
                 git -C "$MAIN_REPO" worktree remove --force "$wt_path" || return 1
             elif ! git -C "$MAIN_REPO" worktree remove "$wt_path"; then
@@ -1323,28 +1445,7 @@ FORKHELP
                     fi
                 fi
             fi
-            # Purge any bazel output_base whose recorded workspace path
-            # (DO_NOT_BUILD_HERE) matches the removed worktree. chmod -R u+w
-            # first because bazel sets action outputs read-only. If rm still
-            # fails (e.g., not user-owned), surface the error and suggest
-            # `wt prune --sudo`.
-            local bazel_root="$HOME/.cache/bazel/_bazel_$USER" ob ob_name ws
-            if [[ -d "$bazel_root" ]]; then
-                for ob in "$bazel_root"/*/(N); do
-                    ob_name=$(basename "$ob")
-                    [[ "$ob_name" =~ ^[0-9a-f]{32}$ ]] || continue
-                    [[ -f "${ob}DO_NOT_BUILD_HERE" ]] || continue
-                    ws=$(<"${ob}DO_NOT_BUILD_HERE")
-                    if [[ "$ws" == "$wt_path" ]]; then
-                        chmod -R u+w "${ob%/}" 2>/dev/null
-                        if rm -rf "${ob%/}"; then
-                            echo "  ${_CT_OK}purged bazel cache:${_CT_RESET} ${_CT_PATH}${ob%/}${_CT_RESET}"
-                        else
-                            echo "  ${_CT_BAD}failed to purge${_CT_RESET} ${_CT_PATH}${ob%/}${_CT_RESET} (try \`wt prune --sudo\`)" >&2
-                        fi
-                    fi
-                done
-            fi
+            __wt_purge_caches "$wt_real" "$wt_digest"
             echo "${_CT_DONE}Done.${_CT_RESET}"
             ;;
         list|ls)
@@ -1442,9 +1543,14 @@ CLEANHELP
             ;;
         prune)
             # Scan bazel output_base dirs (~/.cache/bazel/_bazel_$USER/<32-hex>/)
-            # and rm -rf any whose recorded workspace path (DO_NOT_BUILD_HERE)
-            # no longer exists on disk. Dirs without DO_NOT_BUILD_HERE are
-            # spared (workspace path unknown, can't safely decide). Bazel
+            # and fix-deps caches (~/.cache/fix-deps/<digest>/) and rm -rf the
+            # orphans. bazel: orphaned when its recorded workspace path
+            # (DO_NOT_BUILD_HERE) no longer exists; dirs without one are spared
+            # (workspace unknown). fix-deps: orphaned when every
+            # out/*/DO_NOT_BUILD_HERE points to a missing path, or — with no
+            # markers (never built) — when its digest matches no current
+            # worktree. A fix-deps dir whose digest matches a current worktree
+            # is always spared, as is any dir a running bazel server uses. Bazel
             # sets `chmod -R u-w` on action outputs to protect them, so we
             # `chmod -R u+w` before rm. --sudo prepends sudo to chmod + rm
             # if even that fails (e.g., files not owned by $USER).
@@ -1456,10 +1562,15 @@ CLEANHELP
                     -h|--help)
                         cat <<'PRUNEHELP'
 Usage: wt prune [-y] [--sudo]
-  Find bazel output_base dirs under ~/.cache/bazel/_bazel_$USER/ whose
-  recorded workspace path (DO_NOT_BUILD_HERE) no longer exists on disk,
-  chmod -R u+w them, then rm -rf. y/N prompt; -y skips. --sudo prepends
-  sudo to chmod and rm for files not owned by $USER. IRREVERSIBLE.
+  Find orphaned caches and rm -rf them (after chmod -R u+w):
+    - bazel output_base dirs under ~/.cache/bazel/_bazel_$USER/ whose
+      recorded workspace path (DO_NOT_BUILD_HERE) no longer exists;
+    - fix-deps caches under ~/.cache/fix-deps/ whose out/*/DO_NOT_BUILD_HERE
+      all point to missing paths, or (no markers) whose digest matches no
+      current worktree.
+  Dirs used by a running bazel server are skipped. y/N prompt; -y skips.
+  --sudo prepends sudo to chmod and rm for files not owned by $USER.
+  IRREVERSIBLE.
 PRUNEHELP
                         return 0 ;;
                     *)
@@ -1467,38 +1578,62 @@ PRUNEHELP
                         return 1 ;;
                 esac
             done
-            local bazel_root="$HOME/.cache/bazel/_bazel_$USER"
-            if [[ ! -d "$bazel_root" ]]; then
-                echo "${_CT_WARN}No bazel cache at${_CT_RESET} ${_CT_PATH}$bazel_root${_CT_RESET}"
-                return 0
-            fi
-            local -a orphans orphan_paths
-            local d ob_name ws
-            for d in "$bazel_root"/*/(N); do
-                ob_name=$(basename "$d")
-                [[ "$ob_name" =~ ^[0-9a-f]{32}$ ]] || continue
-                [[ -f "${d}DO_NOT_BUILD_HERE" ]] || continue
-                ws=$(<"${d}DO_NOT_BUILD_HERE")
-                [[ -z "$ws" ]] && continue
-                [[ -d "$ws" ]] && continue
-                orphans+=("${d%/}")
-                orphan_paths+=("$ws")
+            local bazel_root="$HOME/.cache/bazel/_bazel_$USER" fd_root="$HOME/.cache/fix-deps"
+            local -a orphans orphan_kinds orphan_notes busy live_digests reply
+            local d ws line
+            __wt_busy_output_bases
+            busy=("${reply[@]}")
+            for d in "$bazel_root"/*(N/); do
+                [[ "${d:t}" =~ ^[0-9a-f]{32}$ ]] || continue
+                [[ -f "$d/DO_NOT_BUILD_HERE" ]] || continue
+                ws=$(<"$d/DO_NOT_BUILD_HERE")
+                __wt_workspaces_gone "$ws" || continue
+                if __wt_cache_in_use "$d" "${busy[@]}"; then
+                    echo "${_CT_WARN}skipped${_CT_RESET} ${_CT_PATH}$d${_CT_RESET} (in use by a running bazel server)"
+                    continue
+                fi
+                orphans+=("$d")
+                orphan_kinds+=("bazel")
+                orphan_notes+=("was: $ws")
+            done
+            for line in "${(@f)$(git -C "$MAIN_REPO" worktree list --porcelain)}"; do
+                [[ "$line" == "worktree "* ]] || continue
+                live_digests+=("$(__wt_fixdeps_digest "${${line#worktree }:A}")")
+            done
+            live_digests+=("$(__wt_fixdeps_digest "${MAIN_REPO:A}")")
+            for d in "$fd_root"/*(N/); do
+                [[ "${d:t}" =~ ^[0-9a-f]{32}$ ]] || continue
+                (( ${live_digests[(Ie)${d:t}]} )) && continue
+                __wt_cache_workspaces "$d"
+                if (( ${#reply} )); then
+                    __wt_workspaces_gone "${reply[@]}" || continue
+                    ws="was: ${(j:, :)${(u)reply}}"
+                else
+                    ws="no out/ markers; digest matches no worktree"
+                fi
+                if __wt_cache_in_use "$d" "${busy[@]}"; then
+                    echo "${_CT_WARN}skipped${_CT_RESET} ${_CT_PATH}$d${_CT_RESET} (in use by a running bazel server)"
+                    continue
+                fi
+                orphans+=("$d")
+                orphan_kinds+=("fix-deps")
+                orphan_notes+=("$ws")
             done
             if (( ${#orphans[@]} == 0 )); then
                 echo "${_CT_OK}Nothing to prune.${_CT_RESET}"
                 return 0
             fi
-            echo "${_CT_HDR}Orphaned bazel output_base dirs${_CT_RESET} (workspace path missing):"
+            echo "${_CT_HDR}Orphaned caches${_CT_RESET} (workspace missing):"
             local i ob_size
             for (( i=1; i<=${#orphans[@]}; i++ )); do
                 ob_size=$(du -sh "${orphans[i]}" 2>/dev/null | awk '{print $1}')
-                printf "  ${_CT_PATH}%s${_CT_RESET}  (was: ${_CT_PATH}%s${_CT_RESET}, ${_CT_WARN}%s${_CT_RESET})\n" "${orphans[i]}" "${orphan_paths[i]}" "${ob_size:-?}"
+                printf "  ${_CT_INFO}%-8s${_CT_RESET}  ${_CT_PATH}%s${_CT_RESET}  (%s, ${_CT_WARN}%s${_CT_RESET})\n" "${orphan_kinds[i]}" "${orphans[i]}" "${orphan_notes[i]}" "${ob_size:-?}"
             done
             if (( ! assume_yes )); then
-                local reply
+                local confirm
                 printf "${_CT_PROMPT}Proceed?${_CT_RESET} ${_CT_BAD}rm -rf${_CT_RESET} %d dir(s) [y/N] " "${#orphans[@]}"
-                read -r reply
-                if [[ "$reply" != "y" && "$reply" != "Y" ]]; then
+                read -r confirm
+                if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
                     echo "${_CT_BAD}Aborted.${_CT_RESET}"
                     return 1
                 fi
@@ -1507,8 +1642,7 @@ PRUNEHELP
             (( use_sudo )) && sudo_cmd="sudo"
             local removed=0 failed=0
             for ob in "${orphans[@]}"; do
-                $sudo_cmd chmod -R u+w "$ob" 2>/dev/null
-                if $sudo_cmd rm -rf "$ob"; then
+                if __wt_rm_cache "$ob" "$sudo_cmd"; then
                     echo "  ${_CT_OK}removed${_CT_RESET} ${_CT_PATH}$ob${_CT_RESET}"
                     removed=$((removed + 1))
                 else

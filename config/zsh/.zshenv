@@ -1,3 +1,8 @@
+# --- Timezone ---
+# Box's system zone is UTC; show local (Pacific) time in every shell and child
+# process. Respects a TZ already set by the caller (e.g. `TZ=UTC zsh -c ...`).
+export TZ="${TZ:-America/Los_Angeles}"
+
 # --- Persistent ssh-agent ---
 # Reuse a long-lived ssh-agent across shells; overrides Cursor's per-session
 # forwarded SSH_AUTH_SOCK, which goes stale across reconnects and forces

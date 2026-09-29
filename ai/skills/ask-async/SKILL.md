@@ -96,8 +96,8 @@ full waiting time is left.
   question itself. Record the reply's ts as handled, move the deadline to at
   least 5 minutes after the clarification was posted, update the question file,
   say the new deadline in the thread, and keep polling.
-- A reply of `wait` extends the deadline by 30 minutes from the time of the
-  reply; `wait <minutes>` by that many minutes. Record the reply's ts as
+- A reply of `wait` moves the current deadline 30 minutes later; `wait <minutes>`
+  moves it that many minutes later. The deadline never moves earlier. Record the reply's ts as
   handled, update the deadline in the question file, and post
   "`Claude ->` Waiting until **<HH:MM> PT**." in the thread. The same words typed
   in chat do the same.

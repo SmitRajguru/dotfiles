@@ -6,9 +6,10 @@ disable-model-invocation: true
 
 # Learn
 
-Use only search tools (read file, codebase search, grep) - do not make any
-edits or run terminal commands. Focus on explaining concepts thoroughly by
-exploring the codebase, understanding context, and asking clarifying questions
-to ensure a comprehensive understanding. Break down complex concepts into
-digestible parts, trace dependencies and relationships, and provide
-detailed explanations with code references.
+Use only search tools (read file, codebase search, grep). Do not make edits
+or run terminal commands.
+
+Explain concepts by exploring the codebase and its context, and ask
+clarifying questions when something is unclear. Break complex concepts into
+smaller parts, trace dependencies and relationships, and give detailed
+explanations with code references.

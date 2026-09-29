@@ -11,7 +11,7 @@ CLAUDE_DIR="$HOME/.claude"
 CURSOR_DIR="$HOME/.cursor"
 
 mkdir -p \
-  "$CLAUDE_DIR/skills" "$CLAUDE_DIR/agents" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/scripts" \
+  "$CLAUDE_DIR/skills" "$CLAUDE_DIR/agents" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/scripts" "$CLAUDE_DIR/rules" \
   "$CURSOR_DIR/skills" "$CURSOR_DIR/agents" "$CURSOR_DIR/commands" "$CURSOR_DIR/rules" \
   "$XDG_CONFIG_HOME/zsh" "$XDG_CONFIG_HOME/tmux" "$XDG_CONFIG_HOME/p10k" "$XDG_CONFIG_HOME/ccstatusline"
 
@@ -45,30 +45,54 @@ link_dir_contents() {
   shopt -u dotglob nullglob
 }
 
-echo "[ai] Claude Code config (single-file)"
+# prune_stale_links <dest_dir>: remove symlinks in dest_dir that point into this
+# repo at something that no longer exists (a skill, rule or command that was
+# deleted or renamed here). Links owned by overlay repos are left alone.
+prune_stale_links() {
+  local dst="$1" entry
+  [ -d "$dst" ] || return 0
+  shopt -s dotglob nullglob
+  for entry in "$dst"/*; do
+    if [ -L "$entry" ] && [ ! -e "$entry" ] && [[ "$(readlink "$entry")" == "$REPO"/* ]]; then
+      rm "$entry"
+      echo "  - removed stale $entry"
+    fi
+  done
+  shopt -u dotglob nullglob
+}
+
+echo "[ai] Claude Code config"
 link "$REPO/ai/CLAUDE.md"     "$CLAUDE_DIR/CLAUDE.md"
 link "$REPO/ai/settings.json" "$CLAUDE_DIR/settings.json"
 
-echo "[ai] Claude Code skills/agents/commands/scripts (per-item)"
-link_dir_contents "$REPO/ai/skills"   "$CLAUDE_DIR/skills"
-link_dir_contents "$REPO/ai/agents"   "$CLAUDE_DIR/agents"
-link_dir_contents "$REPO/ai/commands" "$CLAUDE_DIR/commands"
-link_dir_contents "$REPO/ai/scripts"  "$CLAUDE_DIR/scripts"
+echo "[ai] Claude Code skills/agents/commands/scripts/rules (per-item)"
+for kind in skills agents commands scripts rules; do
+  prune_stale_links "$CLAUDE_DIR/$kind"
+  link_dir_contents "$REPO/ai/$kind" "$CLAUDE_DIR/$kind"
+done
 
 echo "[ai] Cursor (skills/agents/commands)"
-link_dir_contents "$REPO/ai/skills"   "$CURSOR_DIR/skills"
-link_dir_contents "$REPO/ai/agents"   "$CURSOR_DIR/agents"
-link_dir_contents "$REPO/ai/commands" "$CURSOR_DIR/commands"
+for kind in skills agents commands; do
+  prune_stale_links "$CURSOR_DIR/$kind"
+  link_dir_contents "$REPO/ai/$kind" "$CURSOR_DIR/$kind"
+done
+
+echo "[ai] Cursor rules from ai/rules (regenerated; claude-*.md skipped)"
+"$REPO/ai/scripts/rules-to-cursor.sh" "$REPO/ai/rules" dotfiles "$CURSOR_DIR/rules"
 
 echo "[ai] Cursor user rules from CLAUDE.md (regenerated)"
-cat > "$CURSOR_DIR/rules/personal.mdc" <<'FRONTMATTER'
----
-description: Personal instructions and preferences (auto-generated from dotfiles/ai/CLAUDE.md)
-alwaysApply: true
----
-
-FRONTMATTER
-cat "$REPO/ai/CLAUDE.md" >> "$CURSOR_DIR/rules/personal.mdc"
+# Written to a temp file and moved into place, so an existing symlink at the
+# destination is replaced rather than followed. personal.mdc is the name used
+# before the dotfiles- prefix; remove it if an older setup left it behind.
+personal_tmp=$(mktemp "$CURSOR_DIR/rules/.dotfiles-personal.XXXXXX")
+{
+  printf '%s\n' '---' \
+    'description: Personal instructions and preferences (generated from dotfiles/ai/CLAUDE.md)' \
+    'alwaysApply: true' '---' ''
+  cat "$REPO/ai/CLAUDE.md"
+} > "$personal_tmp"
+mv -f "$personal_tmp" "$CURSOR_DIR/rules/dotfiles-personal.mdc"
+rm -f "$CURSOR_DIR/rules/personal.mdc"
 
 echo "[ai] ccstatusline"
 # An overlay repo may replace this symlink with a real file so it can merge in

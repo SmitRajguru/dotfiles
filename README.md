@@ -7,7 +7,7 @@ Designed to be the always-on baseline. Private/work-specific overlays live in se
 ## Layout
 
 ```
-ai/                    Claude Code + Cursor (CLAUDE.md, settings.json, skills, agents, commands, scripts, ccstatusline)
+ai/                    Claude Code + Cursor (CLAUDE.md, rules, settings.json, skills, agents, scripts, ccstatusline)
 config/                Shell/term configs that follow XDG (zsh, tmux, p10k)
 home/                  Stragglers that must symlink to $HOME (.zshenv-stub, .bazelrc)
 bootstrap.sh           First-time machine setup (apt, tmux from source if < 3.5, oh-my-zsh, p10k, tpm, fonts). Idempotent.
@@ -71,4 +71,4 @@ export MAIN_REPO="$HOME/code"
 
 ## Cursor (Mac)
 
-Cursor's `keybindings.json` lives in the per-user app config dir (`~/Library/Application Support/Cursor/User/keybindings.json` on macOS) and isn't tracked here — the relevant binding to redo on a fresh Mac is the kitty-protocol Shift+Enter override so multi-line edits work in Claude Code's input. The `~/.cursor/{skills,agents,rules,commands}` content *is* tracked via `setup.sh` symlinks.
+Cursor's `keybindings.json` lives in the per-user app config dir (`~/Library/Application Support/Cursor/User/keybindings.json` on macOS) and isn't tracked here — the relevant binding to redo on a fresh Mac is the kitty-protocol Shift+Enter override so multi-line edits work in Claude Code's input. The `~/.cursor/{skills,agents,commands}` content *is* tracked via `setup.sh` symlinks, and `~/.cursor/rules/` is generated from `ai/CLAUDE.md` and `ai/rules/` (files named `claude-*.md` are skipped).

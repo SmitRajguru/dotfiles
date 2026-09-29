@@ -1,6 +1,6 @@
 ---
 name: grill-me
-description: Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when the user wants to stress-test a plan, get grilled on their design, or says "grill me".
+description: Interview the user relentlessly about a goal, plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when the user wants to stress-test a plan, get grilled on their design, or says "grill me", and as the intake step for a large task, to settle the goal, scope, destination and limits on unattended work before starting.
 ---
 
 # grill-me
@@ -12,6 +12,11 @@ Stress-test the user's plan or design by interviewing them relentlessly until ev
 - User says "grill me", "stress-test this", "poke holes", "interview me on this".
 - User has shared a plan or design and wants every assumption surfaced before they commit.
 - A pre-implementation alignment pass would catch ambiguity that implementation would otherwise expose mid-work.
+- A large task is about to start (see `~/.claude/rules/workflow.md`) and any intake decision below is still open. Start from the goal rather than from a plan.
+
+For large-task intake, cover at least: the goal and what finished looks like;
+the scope and what is excluded; constraints; the destination for work products
+(`~/.claude/rules/destinations.md`); and what may run unattended.
 
 ## Procedure
 
@@ -39,12 +44,12 @@ If unclear, ask once.
 
 ### 3. Question discipline
 
-- **Walk the tree depth-first.** Resolve one branch fully before opening the next. Don't fan out 10 parallel open questions — that creates a swamp instead of a path.
-- **Surface dependencies explicitly.** If decision B depends on decision A, say so and resolve A first.
-- **Always include your recommended answer** with each question, plus the reasoning. The user should be reacting to a specific proposal, not a blank prompt.
-- **Prefer `AskUserQuestion`** for crisp multi-choice decisions. Use freeform when the answer space is open.
-- **For coding projects: explore before asking.** If the answer is in the code (existing pattern, current behavior, signature, test coverage), read the code instead of asking. Only ask the user for things only they know — intent, priorities, tradeoffs, constraints.
-- **No softballs.** Push on assumptions, edge cases, failure modes, scope boundaries, and "what happens if X" scenarios. Polite is fine; deferential is not.
+- Walk the tree depth-first. Resolve one branch fully before opening the next. Don't fan out 10 parallel open questions; that creates a swamp instead of a path.
+- Surface dependencies explicitly. If decision B depends on decision A, say so and resolve A first.
+- Include a recommended answer. Give one with each question, plus the reasoning, so the user reacts to a specific proposal rather than a blank prompt.
+- Prefer structured questions. Use `AskUserQuestion` for crisp multi-choice decisions; use freeform when the answer space is open.
+- For coding projects, explore before asking. If the answer is in the code (existing pattern, current behavior, signature, test coverage), read the code instead of asking. Only ask the user for things only they know: intent, priorities, tradeoffs, constraints.
+- No softballs. Push on assumptions, edge cases, failure modes, scope boundaries, and "what happens if X" scenarios. Polite is fine; deferential is not.
 
 ### 4. Stop conditions
 
@@ -53,4 +58,4 @@ End the grill when one of:
 - The user says "stop", "enough", "good", or otherwise signals they're done.
 - The remaining questions are clearly out of scope for the current plan.
 
-When stopping, write a tight summary of the resolved decisions so the user can copy it into a plan/PRD/commit.
+When stopping, write a tight summary of the resolved decisions so the user can copy it into a plan/PRD/commit. For large-task intake, write the summary to the task directory as the plan, list any decisions still open, and confirm with the user before starting work. If the user stopped the grill to abandon the task, do not start.

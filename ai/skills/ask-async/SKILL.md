@@ -10,9 +10,10 @@ the main session instead.
 
 ## Rules for Slack messages
 
-- Post only the question, the options, the default and short status lines
-  ("answer received", "default applied"). Never paste code, file contents,
-  logs, data, secrets, or the text of an answer given in chat.
+- Post only the question, the options, the default, short status lines
+  ("answer received", "default applied") and a copy of an answer given in chat.
+  Never paste code, file contents, logs, data or secrets; if a chat answer
+  contains any, post a one-line summary of it instead.
 - Start every message the agent posts with the prefix `` `Claude ->` ``,
   written as inline code so that Slack renders it differently. Messages sent
   through the Slack tools appear under the user's own name; the prefix tells
@@ -73,8 +74,9 @@ full waiting time is left.
    > check-mark reaction to the question message, and resume <step> with that
    > answer. Otherwise, if it is past the deadline in the question file: set
    > the status to defaulted, CronDelete this job, reply "`Claude ->` No
-   > reply; applied the default: <option letter>.", and resume <step> with the
-   > default. Otherwise do nothing.
+   > reply; applied the default: <option letter>.", add the timed-out reaction
+   > to the question message, and resume <step> with the default. Otherwise do
+   > nothing.
 
 7. Ask the same question in the chat reply, in the same layout, with the Slack
    link and the deadline, and end the turn. The poll only runs while the
@@ -101,14 +103,16 @@ full waiting time is left.
   in chat do the same.
 - An answer typed in chat wins if it arrives while the status is pending: set
   the status to answered, CronDelete the job, post
-  "`Claude ->` Answered in the session." in the thread without the answer text,
-  and add the check-mark reaction to the question message.
-- The check mark: once a question is answered, from Slack or from chat, add a
-  reaction to the question message (the thread's parent) with
-  `slack_add_reaction`, using the emoji named in `AGENT_SLACK_DONE_EMOJI`, or
-  `white_check_mark` if that is unset. A question that ends with the default
-  gets no check mark, so the channel shows at a glance which questions the user
-  answered.
+  "`Claude ->` Answer given in the session: **<answer>**" in the thread (a
+  summary instead if the answer holds code or data), and add the check-mark
+  reaction to the question message. The thread then shows every answer, wherever
+  it was given.
+- Reactions on the question message (the thread's parent), added with
+  `slack_add_reaction`, show each question's outcome at a glance:
+  - answered, from Slack or from chat: the emoji named in
+    `AGENT_SLACK_DONE_EMOJI`, or `white_check_mark` if that is unset;
+  - timed out, with the run continuing on the default: the emoji named in
+    `AGENT_SLACK_TIMEOUT_EMOJI`, or `x` if that is unset.
 - Every path checks the question file first and does nothing if the status is
   no longer pending. Turns in one session never overlap, so this check is
   enough to stop a question being resolved twice.

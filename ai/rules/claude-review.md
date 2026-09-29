@@ -1,9 +1,11 @@
 # Code review
 
 Non-trivial code is reviewed twice: by the user, and by an independent codex
-agent (GPT-5.x through the `cursor-agent` CLI). The codex reviewer comes from a
-different model family and has none of this session's context, which is the
-reason for using it.
+agent (a GPT model through the `cursor-agent` CLI). The codex reviewer comes
+from a different model family and has none of this session's context, which is
+the reason for using it. The model is picked when the review runs, as the
+strongest one Cursor offers at that time; never pin a model name in a rule,
+skill or prompt.
 
 Write code that holds up under both:
 

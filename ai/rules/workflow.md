@@ -38,26 +38,17 @@ writing to the task directory, and sending PushNotifications.
 
 Not allowed without asking: pushing (except `~/dotfiles`, which
 `claude-config.md` requires to be pushed after every change), opening or
-updating pull requests, posting to Slack, changing Jira or Confluence, or any
-other action visible outside this machine. The plan may grant more, for example
-pushing a private repository once review is done.
+updating pull requests, posting to Slack (except the `ask-async` question
+thread), changing Jira or Confluence, or any other action visible outside this
+machine. The plan may grant more, for example pushing a private repository once
+review is done.
 
-When a question comes up that the plan does not answer:
-
-1. Send a PushNotification that states the question and the default you would
-   choose.
-2. Schedule a one-shot CronCreate job about 10 minutes out. Its prompt must
-   stand on its own: the question, the default to apply, the task directory,
-   and the step to resume.
-3. Ask the question in the reply and end the turn.
-4. If the user answers first, delete the job with CronDelete and follow the
-   answer. Otherwise continue with the default when the job fires.
-
-Scheduled jobs only fire while the session is idle, and a one-shot job pinned
-to a date and minute that passes while the agent is busy does not fire at all.
-So whenever the agent regains control (a subagent finishing, for example) after
-the deadline with no answer, treat the wait as expired: delete the job and
-continue with the default.
+When a question comes up that the plan does not answer, use the `ask-async`
+skill. It asks in the chat and in a Slack thread in `$AGENT_SLACK_CHANNEL`,
+sends a PushNotification, polls the thread every 2 minutes, and applies the
+recommended default when 10 minutes pass without an answer. Posting that
+question and its short status lines is the one Slack action allowed without
+asking.
 
 Record each question and the answer or default that was used in the task
 directory, and list the defaults at the top of the final report. Destructive or

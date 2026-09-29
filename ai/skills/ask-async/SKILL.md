@@ -26,20 +26,29 @@ Steps 2 to 7 take seconds; do them back to back, with nothing in between, so
 that the chat question and the Slack question appear at the same time and the
 full waiting time is left.
 
-1. Decide the recommended default and phrase the question so that it can be
-   answered in one line, with lettered options. Pick a question ID:
-   `<task-slug>-q<n>`.
+1. Decide the recommended default and phrase the question so that someone
+   reading it on a phone, with no other context, can answer in one line. Pick
+   a question ID: `<task-slug>-q<n>`.
 2. Set the deadline to 10 minutes from now.
 3. Post the question as a new message in `$AGENT_SLACK_CHANNEL` with
    `slack_send_message`, and keep the returned `ts` and `message_link`:
 
    ```
-   `Claude ->` [<question-id>] Question from an unattended run
-   <question>
-   A) <option> (default)
-   B) <option>
-   The default applies at the first check after <HH:MM> PT if there is no reply in this thread.
+   `Claude ->` **<title: the work and its goal, e.g. "Instructions overhaul: pick the review model">**
+
+   **Question:** <one plain sentence>
+   - **A)** <option> _(default)_
+   - **B)** <option>
+
+   **Note:** <the context needed to answer: what is being decided and what each option leads to, in one or two sentences>
+   **Deadline:** reply in this thread by **<HH:MM> PT**. Without a reply, **<default option>** is used. Reply `wait` for 30 more minutes, or `wait <minutes>`. `<question-id>`
    ```
+
+   Use Slack markdown as shown: a bold title that names the work rather than
+   "question from an unattended run", the options as an indented list, a blank
+   line, then the note and the deadline. Write for a reader who has not seen
+   the session; no internal jargon, file names or IDs except the question ID
+   at the end.
 
    If `AGENT_SLACK_CHANNEL` is unset or the post fails, follow "Without Slack"
    below instead of steps 3 to 6.
@@ -57,8 +66,8 @@ full waiting time is left.
    > (detailed format, which gives each reply's author and ts). If the read
    > fails, do nothing this round. Consider only replies written by the user
    > that do not start with "Claude ->" and whose ts is not in the handled list.
-   > If such a reply asks for clarification, handle it as the skill describes
-   > and keep polling. If it is an answer: set the status to answered and
+   > If such a reply is `wait` or `wait <minutes>`, or asks for clarification,
+   > handle it as the skill describes and keep polling. If it is an answer: set the status to answered and
    > record the reply, CronDelete this job, reply in the thread
    > "`Claude ->` Answer received. Continuing.", and resume <step> with that
    > answer. Otherwise, if it is past the deadline in the question file: set
@@ -66,8 +75,8 @@ full waiting time is left.
    > reply; applied the default: <option letter>.", and resume <step> with the
    > default. Otherwise do nothing.
 
-7. Ask the same question in the chat reply, with the Slack link and the
-   deadline, and end the turn. The poll only runs while the session is idle.
+7. Ask the same question in the chat reply, in the same layout, with the Slack
+   link and the deadline, and end the turn. The poll only runs while the session is idle.
    Subagents launched before the turn ends may keep working; when one finishes,
    check the question file before doing anything that depends on the answer.
 
@@ -83,6 +92,11 @@ full waiting time is left.
   question itself. Record the reply's ts as handled, move the deadline to at
   least 5 minutes after the clarification was posted, update the question file,
   say the new deadline in the thread, and keep polling.
+- A reply of `wait` extends the deadline by 30 minutes from the time of the
+  reply; `wait <minutes>` by that many minutes. Record the reply's ts as
+  handled, update the deadline in the question file, and post
+  "`Claude ->` Waiting until **<HH:MM> PT**." in the thread. The same words typed
+  in chat do the same.
 - An answer typed in chat wins if it arrives while the status is pending: set
   the status to answered, CronDelete the job, and post
   "`Claude ->` Answered in the session." in the thread without the answer text.

@@ -67,18 +67,20 @@ full waiting time is left.
    > fails, do nothing this round. Consider only replies written by the user
    > that do not start with "Claude ->" and whose ts is not in the handled list.
    > If such a reply is `wait` or `wait <minutes>`, or asks for clarification,
-   > handle it as the skill describes and keep polling. If it is an answer: set the status to answered and
-   > record the reply, CronDelete this job, reply in the thread
-   > "`Claude ->` Answer received. Continuing.", and resume <step> with that
+   > handle it as the skill describes and keep polling. If it is an answer:
+   > set the status to answered and record the reply, CronDelete this job,
+   > reply in the thread "`Claude ->` Answer received. Continuing.", add the
+   > check-mark reaction to the question message, and resume <step> with that
    > answer. Otherwise, if it is past the deadline in the question file: set
    > the status to defaulted, CronDelete this job, reply "`Claude ->` No
    > reply; applied the default: <option letter>.", and resume <step> with the
    > default. Otherwise do nothing.
 
 7. Ask the same question in the chat reply, in the same layout, with the Slack
-   link and the deadline, and end the turn. The poll only runs while the session is idle.
-   Subagents launched before the turn ends may keep working; when one finishes,
-   check the question file before doing anything that depends on the answer.
+   link and the deadline, and end the turn. The poll only runs while the
+   session is idle. Subagents launched before the turn ends may keep working;
+   when one finishes, check the question file before doing anything that
+   depends on the answer.
 
 ## Answers
 
@@ -98,8 +100,15 @@ full waiting time is left.
   "`Claude ->` Waiting until **<HH:MM> PT**." in the thread. The same words typed
   in chat do the same.
 - An answer typed in chat wins if it arrives while the status is pending: set
-  the status to answered, CronDelete the job, and post
-  "`Claude ->` Answered in the session." in the thread without the answer text.
+  the status to answered, CronDelete the job, post
+  "`Claude ->` Answered in the session." in the thread without the answer text,
+  and add the check-mark reaction to the question message.
+- The check mark: once a question is answered, from Slack or from chat, add a
+  reaction to the question message (the thread's parent) with
+  `slack_add_reaction`, using the emoji named in `AGENT_SLACK_DONE_EMOJI`, or
+  `white_check_mark` if that is unset. A question that ends with the default
+  gets no check mark, so the channel shows at a glance which questions the user
+  answered.
 - Every path checks the question file first and does nothing if the status is
   no longer pending. Turns in one session never overlap, so this check is
   enough to stop a question being resolved twice.

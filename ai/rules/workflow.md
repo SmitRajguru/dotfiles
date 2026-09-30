@@ -38,7 +38,7 @@ writing to the task directory, and sending PushNotifications.
 
 Not allowed without asking: pushing (except `~/dotfiles`, which
 `claude-config.md` requires to be pushed after every change), opening or
-updating pull requests, posting to Slack (except the `ask-async` question
+updating pull requests, posting to Slack (except in an `ask-async` question
 thread), changing Jira or Confluence, or any other action visible outside this
 machine. The plan may grant more, for example pushing a private repository once
 review is done.
@@ -46,9 +46,10 @@ review is done.
 When a question comes up that the plan does not answer, use the `ask-async`
 skill. It asks in the chat and in a Slack thread in `$AGENT_SLACK_CHANNEL`,
 sends a PushNotification, polls the thread every 2 minutes, and applies the
-recommended default when 10 minutes pass without an answer. Posting that
-question and its short status lines is the one Slack action allowed without
-asking.
+recommended default at the deadline: 10 minutes at first, later if the user
+replies `wait`. In that thread the skill may post the question, short status
+lines, a copy of an answer given in chat, and outcome reactions; these are the
+only Slack actions allowed without asking.
 
 Record each question and the answer or default that was used in the task
 directory, and list the defaults at the top of the final report. Destructive or

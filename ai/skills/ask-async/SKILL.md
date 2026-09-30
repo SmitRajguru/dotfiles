@@ -56,30 +56,36 @@ full waiting time is left.
 4. Send a PushNotification with the question and the default.
 5. Write the question file `<task dir>/<question-id>.md` with: the question,
    the options, the default, the channel, the `ts`, the link, the deadline,
-   `status: pending`, and an empty list of handled reply `ts` values.
+   `status: pending`, `slack_done: no`, the time the poll job is created, and an
+   empty list of handled replies.
 6. Schedule the poll with CronCreate, recurring every 2 minutes
    (`*/2 * * * *`). The prompt must stand on its own and start with the token
    `ask-async poll <question-id>`, by which the job is found later, for example:
 
-   > ask-async poll <question-id>. Read <question file>; if its status is not
-   > pending, find this job with CronList by the token above, CronDelete it and
-   > stop. Otherwise read Slack thread <channel>/<ts> with slack_read_thread
-   > (detailed format, which gives each reply's author and ts). If the read
-   > fails, do nothing this round. Consider only replies written by the user
-   > that do not start with "Claude ->" and whose ts is not in the handled list.
-   > If such a reply is `wait` or `wait <minutes>`, or asks for clarification,
-   > handle it as the skill describes and keep polling. If it is an answer:
-   > set the status to answered and record the reply, CronDelete this job,
-   > reply in the thread "`Claude ->` Answer received. Continuing.", add the
-   > check-mark reaction to the question message, and resume <step> with that
-   > answer. Otherwise, if it is past the deadline in the question file: set
-   > the status to defaulted, CronDelete this job, reply "`Claude ->` No
-   > reply; applied the default: <option letter>.", add the timed-out reaction
-   > to the question message, and resume <step> with the default. Otherwise do
-   > nothing.
+   > ask-async poll <question-id>. Follow ~/.claude/skills/ask-async/SKILL.md.
+   > Read <question file>. If its status is answered or defaulted: if
+   > slack_done is no, post the pending thread reply and reaction for that
+   > outcome, and set slack_done to yes if both succeed; once slack_done is
+   > yes, find this job with CronList by the token above, CronDelete it and
+   > stop. If the status is pending, read Slack thread <channel>/<ts> with
+   > slack_read_thread (detailed format, which gives each reply's author and
+   > ts). If the read fails, do nothing this round. Consider only replies by
+   > the user (<user id>) that do not start with "Claude ->" and are not in the
+   > handled list. A `wait` reply or a clarification: handle it as the Answers
+   > section below says and keep polling. An answer: record it, set the status
+   > to answered, then reply in the thread "`Claude ->` Answer received.
+   > Continuing." and add the answered reaction (AGENT_SLACK_DONE_EMOJI, or
+   > white_check_mark), set slack_done to yes if both succeed, CronDelete this
+   > job if so, and resume <step> with the answer. No answer and past the
+   > deadline in the question file: set the status to defaulted, reply
+   > "`Claude ->` No reply; applied the default: <option letter>." and add the
+   > timed-out reaction (AGENT_SLACK_TIMEOUT_EMOJI, or x), set slack_done as
+   > above, CronDelete this job if so, and resume <step> with the default.
+   > Otherwise do nothing.
 
 7. Ask the same question in the chat reply, in the same layout, with the Slack
-   link and the deadline, and end the turn. The poll only runs while the
+   link and the deadline; in chat, say "reply here or in the Slack thread"
+   instead of "reply in this thread". Then end the turn. The poll only runs while the
    session is idle. Subagents launched before the turn ends may keep working;
    when one finishes, check the question file before doing anything that
    depends on the answer.
@@ -97,25 +103,33 @@ full waiting time is left.
   least 5 minutes after the clarification was posted, update the question file,
   say the new deadline in the thread, and keep polling.
 - A reply of `wait` moves the current deadline 30 minutes later; `wait <minutes>`
-  moves it that many minutes later. The deadline never moves earlier. Record the reply's ts as
-  handled, update the deadline in the question file, and post
-  "`Claude ->` Waiting until **<HH:MM> PT**." in the thread. The same words typed
-  in chat do the same.
-- An answer typed in chat wins if it arrives while the status is pending: set
-  the status to answered, CronDelete the job, post
+  moves it that many minutes later. The deadline never moves earlier. Record
+  the reply as handled (its ts, or "chat <HH:MM>" for one typed in chat),
+  update the deadline in the question file, and post
+  "`Claude ->` Waiting until **<HH:MM> PT**." in the thread. If the new
+  deadline is more than 6 days after the poll job was created, recreate the
+  job first, as described under destructive steps, because recurring jobs
+  expire after 7 days. A question with no deadline (a destructive step) has
+  nothing to extend: reply "`Claude ->` This question has no deadline; the
+  run waits for your answer."
+- An answer typed in chat wins if it arrives while the status is pending:
+  record it and set the status to answered, then post
   "`Claude ->` Answer given in the session: **<answer>**" in the thread (a
-  summary instead if the answer holds code or data), and add the check-mark
-  reaction to the question message. The thread then shows every answer, wherever
-  it was given.
+  summary instead if the answer holds code or data) and add the answered
+  reaction. If both succeed, set slack_done to yes and CronDelete the job;
+  otherwise leave the job to retry them. The thread then shows every answer,
+  wherever it was given.
 - Reactions on the question message (the thread's parent), added with
   `slack_add_reaction`, show each question's outcome at a glance:
   - answered, from Slack or from chat: the emoji named in
     `AGENT_SLACK_DONE_EMOJI`, or `white_check_mark` if that is unset;
   - timed out, with the run continuing on the default: the emoji named in
     `AGENT_SLACK_TIMEOUT_EMOJI`, or `x` if that is unset.
-- Every path checks the question file first and does nothing if the status is
-  no longer pending. Turns in one session never overlap, so this check is
-  enough to stop a question being resolved twice.
+- Every path checks the question file first. The answer or default is applied
+  only on the change from pending, so it happens once; only the Slack
+  acknowledgement and reaction are retried until slack_done is yes. Turns in
+  one session never overlap, so this check is enough to stop a question being
+  resolved twice.
 - The default is applied only after a successful thread read shows no reply.
   The deadline is met at the first poll at or after it, so up to about two
   minutes late.

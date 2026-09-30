@@ -26,3 +26,7 @@ Overlay repositories may add more files to the same directory.
   activity entries, file names.
 - For one-off Python that needs third-party packages, use
   `uv run --with <pkgs> -- python ...`. Never run `pip install`.
+- Never print secret values (tokens, PATs, passwords, cookies) in tool output,
+  including while inspecting config files such as `~/.claude.json`: show key
+  names, or a short hash of the value when two need comparing. Put the same
+  instruction in any subagent prompt that touches such files.

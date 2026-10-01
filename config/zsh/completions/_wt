@@ -88,7 +88,7 @@ case "${words[2]}" in
         case "$REPLY" in
             --switch-to)
                 local -a branches
-                branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch --format='%(refname:short)' 2>/dev/null)"})
+                branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch --format='%(refname:lstrip=2)' 2>/dev/null)"})
                 compadd -a branches
                 return ;;
         esac
@@ -118,7 +118,7 @@ case "${words[2]}" in
         esac
         if (( CURRENT == 3 )); then
             local -a branches
-            branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
+            branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:lstrip=2)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
             compadd -X '<ref> -- base ref to check out: branch / tag / sha (tags & SHAs typed manually)' -a branches
         else
             local -a flags fdisp
@@ -137,7 +137,7 @@ case "${words[2]}" in
         case "$REPLY" in
             --ref)
                 local -a branches
-                branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
+                branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:lstrip=2)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
                 compadd -X '<ref> -- branch / tag / sha to merge in (tags & SHAs typed manually)' -a branches
                 return
                 ;;
@@ -197,7 +197,7 @@ case "${words[2]}" in
                 # worktrees (name -- branch) + branch names (tags/SHAs typed manually)
                 local -a vals disp branches
                 _wt_worktree_compdata
-                branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
+                branches=(${(@f)"$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:lstrip=2)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)"})
                 compadd -l -d disp -a vals
                 compadd -a branches
                 return

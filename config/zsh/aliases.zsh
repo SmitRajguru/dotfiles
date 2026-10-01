@@ -801,7 +801,14 @@ wt() {
     esac
 
     # Helper: get branch name from a repo path
-    __wt_branch() { git -C "$1" symbolic-ref --short HEAD 2>/dev/null; }
+    # Not `symbolic-ref --short` or `%(refname:short)`: when a tag or remote
+    # shares the branch name, git shortens it to "heads/<name>", which
+    # `git branch -d` then fails to find. Strip refs/heads/ instead.
+    __wt_branch() {
+        local ref
+        ref=$(git -C "$1" symbolic-ref -q HEAD 2>/dev/null) || return 1
+        print -r -- "${ref#refs/heads/}"
+    }
 
     # Helper: derive worktree name from branch (strip srajguru/ and category prefix, dash-separate)
     __wt_name_from_branch() {
@@ -2000,7 +2007,7 @@ SYNCHELP
             # signal is the reliable "PR merged, safe to delete locally" cue.
             local gone_raw; local -a gone_branches
             gone_raw=$(git -C "$MAIN_REPO" for-each-ref \
-                --format='%(refname:short) %(upstream:track,nobracket)' refs/heads 2>/dev/null \
+                --format='%(refname:lstrip=2) %(upstream:track,nobracket)' refs/heads 2>/dev/null \
                 | awk '$2=="gone"{print $1}')
             [[ -n "$gone_raw" ]] && gone_branches=(${(f)gone_raw})
             _wt_sync_summary_block "merged? (remote branch gone)" "$_CT_MAUVE" "${gone_branches[@]}"
@@ -2114,11 +2121,11 @@ SYNCHELP
             # the popup height so the branch list stays dominant. Long commit
             # subjects wrap; the log is short and scrollable for the rest.
             local selected fzf_rc
-            selected=$(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ \
+            selected=$(git -C "$repo" for-each-ref --format='%(refname:lstrip=2)' refs/heads/ \
                 | fzf -m --tmux center,85%,80% --prompt='delete branch> ' \
                       --preview-window='down,33%,wrap' \
                       --header='Tab=mark  Enter=confirm  (current / worktree-checked-out branches skipped)' \
-                      --preview="git -C ${(q)repo} log --oneline --graph --decorate --color=always -12 {} 2>/dev/null")
+                      --preview="git -C ${(q)repo} log --oneline --graph --decorate --color=always -12 refs/heads/{} 2>/dev/null")
             fzf_rc=$?
             # fzf: 0=selected, 1=no match, 130=interrupt/ESC → nothing to do.
             # Anything else (2=error, 126/127) is a real failure worth surfacing.
@@ -2607,7 +2614,7 @@ elif [ -n "$BASH_VERSION" ]; then
                 # wt push <wt-name> [--switch-to <branch>]
                 local prev="${COMP_WORDS[COMP_CWORD-1]}"
                 if [[ "$prev" == "--switch-to" ]]; then
-                    COMPREPLY=($(compgen -W "$(git -C "${MAIN_REPO:-$HOME}" branch --format='%(refname:short)' 2>/dev/null)" -- "$cur"))
+                    COMPREPLY=($(compgen -W "$(git -C "${MAIN_REPO:-$HOME}" branch --format='%(refname:lstrip=2)' 2>/dev/null)" -- "$cur"))
                 elif (( COMP_CWORD > 2 )); then
                     COMPREPLY=($(compgen -W "--switch-to" -- "$cur"))
                 fi
@@ -2620,7 +2627,7 @@ elif [ -n "$BASH_VERSION" ]; then
                 elif [[ "$prev" == "--into" ]]; then
                     :  # freeform new worktree name
                 elif (( COMP_CWORD == 2 )); then
-                    COMPREPLY=($(compgen -W "$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:short)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)" -- "$cur"))
+                    COMPREPLY=($(compgen -W "$(git -C "${MAIN_REPO:-$HOME}" branch -a --format='%(refname:lstrip=2)' 2>/dev/null | sed -e 's|^origin/||' -e '/^HEAD$/d' | sort -u)" -- "$cur"))
                 else
                     COMPREPLY=($(compgen -W "--into --remote" -- "$cur"))
                 fi

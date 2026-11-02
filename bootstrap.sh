@@ -80,12 +80,11 @@ trap print_summary EXIT
 ###############################################################################
 step_apt() {
   local APT_PKGS=(
-    zsh git curl wget hub terminator tmux ssh-askpass
-    libncurses5-dev build-essential
-    libevent-dev ncurses-dev bison pkg-config
+    zsh git curl wget unzip hub tmux ssh-askpass
+    build-essential
+    libevent-dev libncurses-dev bison pkg-config
     fzf jq fontconfig
     expect  # provides `unbuffer`, used by _capture_with_color to keep colors
-    software-properties-common
   )
   local MISSING=()
   for p in "${APT_PKGS[@]}"; do
@@ -226,7 +225,8 @@ step_ruby() {
   # ruby >= 3.0). Ubuntu 20.04 focal ships ruby 2.7 in apt and has no working
   # 3.x via snap (snap ruby is built against glibc 2.34+, focal has 2.31) or
   # brightbox PPA (focal only goes to 2.7). rbenv builds ruby from source
-  # against the host glibc and installs into ~/.rbenv (user-scope, no sudo).
+  # against the host glibc and installs into ~/.rbenv (user-scope, no sudo),
+  # which works the same on 20.04 and 24.04.
   local RUBY_FLOOR_MAJOR=3 RUBY_FLOOR_MINOR=0
   local RUBY_VERSION_TARGET="3.4.9"
   local RBENV_ROOT="$HOME/.rbenv"
@@ -281,7 +281,7 @@ step_ruby() {
   local BUILD_DEPS=(
     autoconf bison patch rustc
     libssl-dev libyaml-dev libreadline-dev zlib1g-dev libgmp-dev
-    libncurses5-dev libffi-dev libgdbm-dev libdb-dev uuid-dev
+    libncurses-dev libffi-dev libgdbm-dev libdb-dev uuid-dev
   )
   local missing=()
   for p in "${BUILD_DEPS[@]}"; do
@@ -462,6 +462,15 @@ step_rclone() {
     rm -rf "$TMP"
     echo "Installed: $("$RCLONE_BIN" version 2>/dev/null | awk 'NR==1{print $2}') -> $RCLONE_BIN"
   fi
+  # `rclone mount` needs a FUSE helper. Install fuse3 only when neither helper
+  # exists: on 22.04 and later the fuse (v2) and fuse3 packages conflict, and
+  # apt would remove an installed fuse to make room.
+  if have fusermount3 || have fusermount; then
+    echo "FUSE helper present."
+  else
+    echo "Installing fuse3 (FUSE helper for rclone mount)..."
+    sudo apt-get install -y fuse3
+  fi
 }
 
 ###############################################################################
@@ -494,7 +503,7 @@ run_step "1. apt packages"                          step_apt
 run_step "2. tmux >= 3.5 (build from source if too old)" step_tmux
 run_step "3. fzf >= 0.53 (binary from github if too old)" step_fzf
 run_step "4. default shell -> zsh"                  step_default_shell
-run_step "5. ruby >= 3.0 (brightbox PPA if too old)" step_ruby
+run_step "5. ruby >= 3.0 (rbenv build if too old)"  step_ruby
 run_step "6. ruby gems (public_suffix, colorls)"    step_ruby_gems
 run_step "7. tpm (tmux plugin manager)"             step_tpm
 run_step "8. oh-my-zsh"                             step_oh_my_zsh
@@ -502,7 +511,7 @@ run_step "9. zsh plugins (autosuggestions, syntax-highlighting)" step_zsh_plugin
 run_step "10. powerlevel10k theme"                  step_p10k
 run_step "11. MesloLGS NF fonts"                    step_fonts
 run_step "12. Claude Code CLI"                      step_claude_cli
-run_step "13. rclone >= 1.74 (userspace binary)"    step_rclone
+run_step "13. rclone >= 1.74 (userspace binary + FUSE helper)" step_rclone
 run_step "14. symlinks (setup.sh)"                  step_symlinks
 run_step "15. tmux-refresh (TPM install + update)"  step_tmux_refresh
 

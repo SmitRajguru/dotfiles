@@ -18,6 +18,7 @@ _ssh_agent_alive() {
 }
 [[ -r "$_ssh_agent_env" ]] && source "$_ssh_agent_env" >/dev/null
 if ! _ssh_agent_alive; then
+    [[ -d "$HOME/.ssh" ]] || mkdir -m 700 "$HOME/.ssh"
     ssh-agent -s >| "$_ssh_agent_env"
     chmod 600 "$_ssh_agent_env"
     source "$_ssh_agent_env" >/dev/null

@@ -762,7 +762,9 @@ zsh_directory_name_functions=(${zsh_directory_name_functions:#_zdn_repo} _zdn_re
 #                                           Add <ref> (branch/tag/sha) as a new worktree (default remote: origin)
 #   wt rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt), then prompts to
 #                                           delete its local branch; auto-purges its bazel + fix-deps caches
-#   wt sync                                 Fetch origin once + `hub sync` in MAIN_REPO, fast-forward each worktree's branch to its upstream.
+#   wt sync                                 Fetch origin once, fast-forward local branches not checked out anywhere, then each worktree's
+#                                           branch to its upstream. Flags worktrees whose branch was moved underneath them ([moved])
+#                                           and offers to check out the moved branch's files there.
 #                                           Skips worktrees with a held index.lock, offers to clear stale ones, and keeps going past a
 #                                           failed ff (reported under `failed`; sync then exits non-zero)
 #   wt merge --ref <ref> [--into <worktree>] Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
@@ -792,7 +794,7 @@ wt() {
     local action="$1"
     shift 2>/dev/null
 
-    # Network subcommands hit a remote (fetch / hub sync), so ensure the
+    # Network subcommands hit a remote (fetch), so ensure the
     # ssh-agent has a key first — otherwise the fetch hangs on a passphrase
     # prompt. The fetch runs via `unbuffer git`, which execs the git binary and
     # bypasses the git() wrapper, so the guard has to live here too.
@@ -1665,18 +1667,23 @@ PRUNEHELP
             # all worktrees via the main repo's .git dir), then fast-forward
             # each worktree's checked-out branch to its upstream. Classifies
             # each wt as up-to-date / ff / ahead / diverged / no-upstream /
-            # detached / dirty. Refuses ff on dirty wts.
+            # detached / moved / dirty. Refuses ff on dirty wts.
             local dry_run=0 t0=$SECONDS
             case "${1:-}" in
                 -h|--help)
                     cat <<'SYNCHELP'
 Usage: wt sync [--dry-run|-n]
   Single `git fetch origin --prune` from the main repo (shared refs),
-  then `hub sync` in MAIN_REPO to ff every local branch that tracks
-  a remote, then per-worktree `git merge --ff-only @{u}` on the
-  checked-out branch. Skips dirty / detached / upstream-less
-  worktrees. Logs diverged or ahead branches without modifying them.
-  --dry-run / -n: report state only — no fetch / hub-sync / merge.
+  then fast-forwards every local branch that tracks an origin branch
+  and is not checked out in any worktree, then runs per-worktree
+  `git merge --ff-only @{u}` on the checked-out branch. Skips dirty /
+  detached / upstream-less worktrees. Logs diverged or ahead branches
+  without modifying them. A worktree whose branch was moved from
+  outside it (index and files still at the old commit) is reported
+  as [moved]; in an interactive shell wt sync offers to check out
+  the branch's files there (refused if that would overwrite
+  untracked or ignored files), then continues normally.
+  --dry-run / -n: report state only — no fetch / branch update / merge.
 SYNCHELP
                     return 0 ;;
                 -n|--dry-run) dry_run=1 ;;
@@ -1702,11 +1709,10 @@ SYNCHELP
             # Runs in --dry-run too: it only removes records for already-deleted
             # dirs, which keeps the report accurate rather than mutating state.
             __wt_prune_stale
-            # Network phase: fetch once (shared refs), then hub-sync to ff every
-            # tracking branch. Skipped under --dry-run, which reports state as of
-            # the last real sync.
+            # Network phase: fetch once (shared refs). Skipped under --dry-run,
+            # which reports state as of the last real sync.
             if (( dry_run )); then
-                echo "${_CT_PHASE}[dry-run]${_CT_RESET} ${_CT_PATH}no fetch / hub-sync / merge — reporting last-known state${_CT_RESET}"
+                echo "${_CT_PHASE}[dry-run]${_CT_RESET} ${_CT_PATH}no fetch / branch update / merge — reporting last-known state${_CT_RESET}"
             else
                 echo "${_CT_PHASE}[fetch]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: git fetch origin --prune"
                 # Capture output then print, so sed doesn't mask the fetch's exit
@@ -1723,31 +1729,54 @@ SYNCHELP
                     echo "${_CT_BAD}[fetch] failed (rc=$fetch_rc); aborting wt sync${_CT_RESET}" >&2
                     return 1
                 fi
-                # `hub sync` ff's every local branch in MAIN_REPO that tracks a
-                # remote (not just the checked-out one). Complements the per-wt
-                # ff below, which only touches branches currently checked out
-                # somewhere.
-                echo "${_CT_PHASE}[hub-sync]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: hub sync"
-                local hub_output hub_rc
-                hub_output=$(_capture_with_color hub -C "$MAIN_REPO" sync)
-                hub_rc=$?
-                if [[ -n "$hub_output" ]]; then
-                    printf '%s\n' "$hub_output" | tr '\r' '\n' | _print_trimmed 5 5 "    "
-                else
-                    echo "    ${_CT_PATH}(all branches up-to-date)${_CT_RESET}"
-                fi
-                if (( hub_rc != 0 )); then
-                    echo "${_CT_BAD}[hub-sync] failed (rc=$hub_rc); aborting wt sync${_CT_RESET}" >&2
-                    return 1
-                fi
             fi
-            echo "${_CT_PHASE}[worktrees]${_CT_RESET}"
-            local -a wts
-            local wt_path
             # Per-category lists for the grouped summary at the end.
             local -a ff_list uptodate_list ahead_list diverged_list \
                      no_upstream_list detached_list dirty_list \
-                     locked_list failed_list
+                     moved_list locked_list failed_list
+            # Branches checked out in a worktree are left to the per-worktree
+            # merge: moving only their pointer (as `hub sync` does) leaves the
+            # worktree's index and files at the old commit. `git fetch .` also
+            # refuses branches a worktree is rebasing or bisecting.
+            echo "${_CT_PHASE}[branches]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: fast-forward origin branches not checked out in a worktree"
+            local br_name br_up br_track br_wt br_old br_new br_out br_rc br_note n_br_listed=0
+            local -a br_fetch_opts=(--quiet --no-write-fetch-head --no-auto-maintenance
+                                    --no-recurse-submodules --no-tags)
+            (( dry_run )) && br_fetch_opts+=(--dry-run)
+            while IFS=: read -r br_name br_up br_track br_wt; do
+                [[ "$br_up" == refs/remotes/origin/* && -z "$br_wt" ]] || continue
+                case "$br_track" in
+                    "behind "*)
+                        br_old=$(git -C "$MAIN_REPO" rev-parse --short "refs/heads/$br_name")
+                        br_new=$(git -C "$MAIN_REPO" rev-parse --short "$br_up")
+                        br_out=$(LC_ALL=C git -C "$MAIN_REPO" fetch "${br_fetch_opts[@]}" \
+                            . "${br_up}:refs/heads/${br_name}" 2>&1)
+                        br_rc=$?
+                        br_note="$br_track"
+                        (( dry_run )) && br_note+="; dry-run: would fast-forward"
+                        if (( br_rc == 0 )); then
+                            echo "  ${_CT_OK}[ff]${_CT_RESET} ${_CT_REF}$br_name${_CT_RESET} ${_CT_SHA}$br_old${_CT_RESET} → ${_CT_SHA}$br_new${_CT_RESET} ${_CT_PATH}($br_note)${_CT_RESET}"
+                        elif [[ "$br_out" == *"refusing to fetch into branch"* ]]; then
+                            echo "  ${_CT_WARN}[in-use]${_CT_RESET} ${_CT_REF}$br_name${_CT_RESET} ${_CT_PATH}(a worktree is rebasing or bisecting it; not moved)${_CT_RESET}"
+                        else
+                            echo "  ${_CT_BAD}[ff] failed${_CT_RESET} ${_CT_REF}$br_name${_CT_RESET} ${_CT_PATH}(rc=$br_rc)${_CT_RESET}" >&2
+                            printf '%s\n' "$br_out" | _print_trimmed 5 5 "    "
+                            failed_list+=("$br_name (branch) — ff rc=$br_rc")
+                        fi
+                        ;;
+                    "ahead "*", behind "*)
+                        echo "  ${_CT_BAD}[diverged]${_CT_RESET} ${_CT_REF}$br_name${_CT_RESET} ⇄ ${_CT_REF}${br_up#refs/remotes/}${_CT_RESET} ${_CT_PATH}($br_track)${_CT_RESET}" ;;
+                    "ahead "*)
+                        echo "  ${_CT_WARN}[ahead]${_CT_RESET} ${_CT_REF}$br_name${_CT_RESET} ${_CT_PATH}($br_track; unpushed commits)${_CT_RESET}" ;;
+                    *) continue ;;
+                esac
+                (( ++n_br_listed ))
+            done < <(git -C "$MAIN_REPO" for-each-ref \
+                --format='%(refname:lstrip=2):%(upstream):%(upstream:track,nobracket):%(worktreepath)' refs/heads)
+            (( n_br_listed )) || echo "    ${_CT_PATH}(all branches up-to-date)${_CT_RESET}"
+            echo "${_CT_PHASE}[worktrees]${_CT_RESET}"
+            local -a wts
+            local wt_path
             while IFS= read -r wt_path; do
                 [[ -z "$wt_path" ]] && continue
                 wts+=("$wt_path")
@@ -1792,7 +1821,61 @@ SYNCHELP
                     label="${wt_path##*/}"
                 fi
                 echo "  ${_CT_HDR}===== $label =====${_CT_RESET}"
-                if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
+                local wt_status
+                wt_status=$(git -C "$wt_path" status --porcelain 2>/dev/null)
+                # Branch moved from outside the worktree: the newest entry of its
+                # own HEAD reflog (other than this block's rewind and undo) is
+                # still the old commit, which the index and files match.
+                if [[ -n "$wt_status" ]]; then
+                    local moved_branch moved_from moved_to moved_ans=""
+                    moved_branch=$(__wt_branch "$wt_path")
+                    moved_from=$(git -C "$wt_path" reflog -n 20 --format='%H%x09%gs' HEAD 2>/dev/null \
+                        | awk -F'\t' '$2 !~ /^wt sync: / {print $1; exit}')
+                    moved_to=$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)
+                    if [[ -n "$moved_branch" && -n "$moved_from" && "$moved_from" != "$moved_to" ]] \
+                        && ! git -C "$wt_path" diff --cached --quiet 2>/dev/null \
+                        && git -C "$wt_path" diff --cached --quiet "$moved_from" -- 2>/dev/null \
+                        && git -C "$wt_path" diff --quiet 2>/dev/null; then
+                        echo "  ${_CT_WARN}[moved]${_CT_RESET} ${_CT_REF}$moved_branch${_CT_RESET} ${_CT_PATH}(branch moved outside this worktree; index and files are still at the old commit)${_CT_RESET}"
+                        _wt_sync_meta "branch" "${_CT_REF}${moved_branch}${_CT_RESET}"
+                        _wt_sync_meta "files"  "${_CT_SHA}${moved_from[1,8]}${_CT_RESET} ${_CT_PATH}(index and files)${_CT_RESET}"
+                        _wt_sync_meta "tip"    "${_CT_SHA}${moved_to[1,8]}${_CT_RESET} ${_CT_PATH}(branch now)${_CT_RESET}"
+                        if (( ! dry_run )) && [[ -o interactive ]]; then
+                            printf "    ${_CT_PROMPT}Check out %s's files at %s in this worktree?${_CT_RESET} [y/N]: " "$moved_branch" "${moved_to[1,8]}" >&2
+                            read -r moved_ans < /dev/tty
+                        fi
+                        # Rewind the branch to the commit the worktree holds, then
+                        # fast-forward back to the same tip so git updates the
+                        # files; undo the rewind if the merge refuses (it also
+                        # refuses to overwrite ignored files with this flag).
+                        local moved_ok=0 moved_out
+                        if [[ "$moved_ans" == [yY]* ]]; then
+                            if ! git -C "$wt_path" merge-base --is-ancestor "$moved_from" "$moved_to"; then
+                                echo "    ${_CT_BAD}not updated:${_CT_RESET} ${_CT_SHA}${moved_to[1,8]}${_CT_RESET} does not descend from ${_CT_SHA}${moved_from[1,8]}${_CT_RESET}" >&2
+                            elif git -C "$wt_path" update-ref -m "wt sync: rewind to the worktree's commit" \
+                                    "refs/heads/$moved_branch" "$moved_from" "$moved_to"; then
+                                moved_out=$(_capture_with_color git -C "$wt_path" merge --ff-only --no-overwrite-ignore "$moved_to")
+                                if (( $? == 0 )); then
+                                    moved_ok=1
+                                else
+                                    git -C "$wt_path" update-ref -m "wt sync: undo rewind" \
+                                        "refs/heads/$moved_branch" "$moved_to" "$moved_from"
+                                fi
+                                [[ -n "$moved_out" ]] && printf '%s\n' "$moved_out" | tr '\r' '\n' | _print_trimmed 5 5 "    "
+                            fi
+                        fi
+                        if (( moved_ok )); then
+                            echo "    ${_CT_OK}updated${_CT_RESET} index and files ${_CT_SHA}${moved_from[1,8]}${_CT_RESET} → ${_CT_SHA}${moved_to[1,8]}${_CT_RESET}"
+                            wt_status=$(git -C "$wt_path" status --porcelain 2>/dev/null)
+                        else
+                            _wt_sync_meta "fix" "${_CT_PATH}git -C $wt_path update-ref refs/heads/$moved_branch $moved_from $moved_to && git -C $wt_path merge --ff-only --no-overwrite-ignore $moved_to${_CT_RESET}"
+                            _wt_head_meta "$wt_path"
+                            moved_list+=("$label ($moved_branch)")
+                            continue
+                        fi
+                    fi
+                fi
+                if [[ -n "$wt_status" ]]; then
                     echo "  ${_CT_BAD}[dirty]${_CT_RESET}"
                     # Break dirty count into staged / unstaged / untracked.
                     # `diff --cached` = index vs HEAD; `diff` = worktree vs
@@ -1971,6 +2054,7 @@ SYNCHELP
             printf '%s⏱ %d worktree(s) in %ds%s %s(ff %d · dirty %d)%s' \
                 "${_CT_PHASE}" ${#wts} $(( SECONDS - t0 )) "${_CT_RESET}" \
                 "${_CT_PATH}" ${#ff_list} ${#dirty_list} "${_CT_RESET}"
+            (( ${#moved_list} ))  && printf ' %s(moved %d)%s'  "${_CT_WARN}" ${#moved_list}  "${_CT_RESET}"
             (( ${#locked_list} )) && printf ' %s(locked %d)%s' "${_CT_WARN}" ${#locked_list} "${_CT_RESET}"
             (( ${#failed_list} )) && printf ' %s(failed %d)%s' "${_CT_BAD}"  ${#failed_list} "${_CT_RESET}"
             printf '\n'
@@ -1997,6 +2081,7 @@ SYNCHELP
             _wt_sync_summary_block "no-upstream"  "$_CT_WARN" "${no_upstream_list[@]}"
             _wt_sync_summary_block "detached"     "$_CT_BAD"  "${detached_list[@]}"
             _wt_sync_summary_block "dirty"        "$_CT_BAD"  "${dirty_list[@]}"
+            _wt_sync_summary_block "moved (branch moved outside its worktree)" "$_CT_WARN" "${moved_list[@]}"
             _wt_sync_summary_block "locked"       "$_CT_WARN" "${locked_list[@]}"
             _wt_sync_summary_block "failed"       "$_CT_BAD"  "${failed_list[@]}"
             # Likely-merged branches: our `fetch --prune` deletes origin/<branch>
@@ -2029,9 +2114,9 @@ SYNCHELP
             (( ${#gone_branches} > 0 )) && printf ' %s— %d look merged (remote gone)%s' "$_CT_MAUVE" ${#gone_branches} "$_CT_RESET"
             (( n_branches >= warn_at || ${#gone_branches} > 0 )) && printf ' %s→ consider `wt prune-branches`%s' "$_CT_PATH" "$_CT_RESET"
             printf '\n'
-            # Non-zero if any worktree failed to fast-forward, so callers and
-            # `$?` still see a problem even though the sweep ran to completion.
-            (( ${#failed_list} )) && return 1
+            # Non-zero if a fast-forward failed or a worktree was left [moved],
+            # so callers and `$?` still see a problem after a full sweep.
+            (( ${#failed_list} || ${#moved_list} )) && return 1
             return 0
             ;;
         merge)
@@ -2263,7 +2348,7 @@ Commands:
                                        Add <ref> (branch/tag/sha) as a new worktree (default remote: origin)
   rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt), then
                                        prompts to delete its local branch; auto-purges its bazel cache
-  sync                                 Fetch origin once, fast-forward each worktree's branch to its upstream
+  sync                                 Fetch origin once, fast-forward branches not checked out anywhere, then each worktree's branch
   merge --ref <ref> [--into <worktree>] Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
   clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
   prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist

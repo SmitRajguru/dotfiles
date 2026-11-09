@@ -86,6 +86,12 @@ plugins=(git zsh-syntax-highlighting zsh-autosuggestions fzf)
 export CATPPUCCIN_FLAVOR=macchiato
 source ${ZDOTDIR:-$HOME}/catppuccin_${CATPPUCCIN_FLAVOR}-zsh-syntax-highlighting.zsh
 
+# Set before oh-my-zsh, whose lib/history.zsh only raises values below
+# 50000/10000. zsh trims HISTFILE to SAVEHIST entries when it rewrites it;
+# HISTSIZE above SAVEHIST leaves room for hist_expire_dups_first.
+HISTSIZE=1200000
+SAVEHIST=1000000
+
 source $ZSH/oh-my-zsh.sh
 
 # User configuration

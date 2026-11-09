@@ -1,0 +1,10 @@
+#compdef zsh-history
+
+# zsh-history completion: the action, --dry-run, and an archive file.
+# Lives on $fpath (prepended in $ZDOTDIR/.zshenv).
+
+_arguments \
+    '(- *)'{-h,--help}'[show usage]' \
+    '(-n --dry-run)'{-n,--dry-run}'[report counts without writing]' \
+    '1:action:(export import)' \
+    '2::archive file:_files'

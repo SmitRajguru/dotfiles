@@ -2658,6 +2658,290 @@ stop-p10k-branch-prompt-watcher() {
 alias netcheck='cls; netstat -tulpn'
 
 # -------------------------------------------------------------------
+# zsh-history export|import [--dry-run|-n] [file]
+#   export merges $HISTFILE into an archive file; import merges the archive
+#   into $HISTFILE. Exact duplicates (same start time, duration and command)
+#   are dropped and the result is sorted by start time, so both directions
+#   can be repeated. file defaults to $ZSH_HISTORY_ARCHIVE, else
+#   ${XDG_DATA_HOME:-~/.local/share}/zsh-history/archive.
+# -------------------------------------------------------------------
+# _zsh_history_lock <path>: takes <path>.LOCK the way zsh locks HISTFILE (a
+# hard link to a temp file), waiting up to 10 s, and sets REPLY to the temp
+# file, which _zsh_history_unlock needs. It never breaks another process's
+# lock: removal cannot be made atomic with the age check. zsh itself breaks
+# HISTFILE locks older than 10 s.
+_zsh_history_lock() {
+    local lock="$1.LOCK" token i ok=0
+    token=$(mktemp "$lock.XXXXXX") || return 1
+    {
+        for i in {1..40}; do
+            if ln -- "$token" "$lock" 2>/dev/null; then
+                ok=1
+                REPLY="$token"
+                return 0
+            fi
+            sleep 0.25
+        done
+        print -u2 -r -- "zsh-history: could not lock $1; remove $lock if no zsh-history is running"
+        return 1
+    } always {
+        (( ok )) || rm -f -- "$token"
+    }
+}
+
+# _zsh_history_unlock <path> <token>: removes <path>.LOCK only if it is still
+# the lock taken with <token>, not one another process took after breaking it.
+_zsh_history_unlock() {
+    [[ "$1.LOCK" -ef "$2" ]] && rm -f -- "$1.LOCK"
+    rm -f -- "$2"
+}
+
+# _zsh_history_copy_locked <lock path> <file> <out>: copies <file> to <out>
+# under the lock (zsh appends to HISTFILE in place) and sets REPLY to
+# "present" or "absent"; an absent <file> gives an empty <out>.
+_zsh_history_copy_locked() {
+    local token rc=0
+    if [[ ! -d "${1:h}" ]]; then
+        REPLY=absent
+        : >| "$3"
+        return
+    fi
+    _zsh_history_lock "$1" || return 1
+    token="$REPLY"
+    {
+        if [[ -e "$2" ]]; then
+            REPLY=present
+            cp -- "$2" "$3" || rc=1
+        else
+            REPLY=absent
+            : >| "$3" || rc=1
+        fi
+    } always {
+        _zsh_history_unlock "$1" "$token"
+    }
+    return $rc
+}
+
+# _zsh_history_check_owner <path>: refuses an existing path that is not owned
+# by the current user or is writable by group or others, so that an archive on
+# shared storage cannot be planted or swapped by someone else.
+_zsh_history_check_owner() {
+    local -A st
+    [[ -e "$1" ]] || return 0
+    zstat -H st -- "$1" || return 1
+    if (( st[uid] != UID || (st[mode] & 8#022) )); then
+        print -u2 -r -- "zsh-history: refusing $1: it must be owned by you and not writable by group or others"
+        return 1
+    fi
+}
+
+# _zsh_history_merge <dst> <src> <out>: writes the union of two
+# extended-history files to <out> (skipped when <out> is empty), stable-sorted
+# by start time with <dst> first on ties, and prints "<added> <total>", where
+# <added> counts <src> entries missing from <dst>. As in zsh's own reader, a
+# line ending in a backslash continues the entry, and a trailing backslash at
+# the end of a file is dropped. An entry without a ": start:elapsed;" header
+# sorts with the entry before it.
+_zsh_history_merge() {
+    local keys
+    [[ -z "$3" ]] || : >| "$3" || return 1
+    keys=$(mktemp) || return 1
+    {
+        KEYS="$keys" OUT="$3" LC_ALL=C awk '
+            function add(e, from_src,   t) {
+                if (e in seen) return
+                if (e ~ /^: [0-9]+:[0-9]+;/) {
+                    t = substr(e, 3)
+                    ts = substr(t, 1, index(t, ":") - 1)
+                }
+                seen[e] = 1
+                entry[++n] = e
+                print ts, n > ENVIRON["KEYS"]
+                if (from_src) added++
+            }
+            function flush() {
+                if (cont) {
+                    sub(/\\$/, "", e)
+                    add(e, e_src)
+                    cont = 0
+                }
+            }
+            FNR == 1 { flush(); ts = 0 }
+            {
+                if (cont) e = e "\n" $0
+                else { e = $0; e_src = src }
+                cont = /\\$/
+                if (!cont) add(e, e_src)
+            }
+            END {
+                flush()
+                if (n && close(ENVIRON["KEYS"]) != 0) exit 2
+                if (ENVIRON["OUT"] != "") {
+                    cmd = "sort -n -k1,1 -k2,2 \047" ENVIRON["KEYS"] "\047"
+                    while ((cmd | getline line) > 0) {
+                        split(line, f, " ")
+                        print entry[f[2]] > ENVIRON["OUT"]
+                        written++
+                    }
+                    if (close(cmd) != 0 || written != n) exit 2
+                    if (n && close(ENVIRON["OUT"]) != 0) exit 2
+                }
+                print added + 0, n + 0
+            }' "$1" src=1 "$2"
+    } always {
+        rm -f -- "$keys"
+    }
+}
+
+zsh-history() {
+    setopt local_options no_xtrace no_verbose typeset_silent
+    zmodload -F zsh/stat b:zstat || return 1
+    local usage="Usage: zsh-history export|import [--dry-run|-n] [--] [file]
+  export   merge \$HISTFILE into the archive file
+  import   merge the archive file into \$HISTFILE
+  Entries already present (same start time, duration and command) are
+  skipped and the result is sorted by start time, so either direction can be
+  repeated. --dry-run reports counts without writing.
+  file defaults to \$ZSH_HISTORY_ARCHIVE, else
+  \${XDG_DATA_HOME:-~/.local/share}/zsh-history/archive. It must be owned by
+  you and not writable by group or others, and so must its directory."
+    local action="${1:-}" dry_run=0 file="" opts_done=0
+    (( $# )) && shift
+    case "$action" in
+        export|import) ;;
+        -h|--help) print -r -- "$usage"; return 0 ;;
+        *) print -u2 -r -- "$usage"; return 1 ;;
+    esac
+    while (( $# )); do
+        if (( ! opts_done )); then
+            case "$1" in
+                --) opts_done=1; shift; continue ;;
+                -n|--dry-run) dry_run=1; shift; continue ;;
+                -h|--help) print -r -- "$usage"; return 0 ;;
+                -*) print -u2 -r -- "zsh-history: unknown option '$1'"; return 1 ;;
+            esac
+        fi
+        if [[ -n "$file" ]]; then
+            print -u2 -r -- "zsh-history: more than one file given"
+            return 1
+        fi
+        file="$1"
+        shift
+    done
+    if [[ -z "$HISTFILE" ]]; then
+        print -u2 -r -- "zsh-history: HISTFILE is not set"
+        return 1
+    fi
+    if [[ -o hist_fcntl_lock ]]; then
+        print -u2 -r -- "zsh-history: HIST_FCNTL_LOCK is set; only zsh's default .LOCK file locking is supported"
+        return 1
+    fi
+    file="${file:-${ZSH_HISTORY_ARCHIVE:-${XDG_DATA_HOME:-$HOME/.local/share}/zsh-history/archive}}"
+    file="${file:A}"
+    # zsh locks "$HISTFILE.LOCK" next to the name it was given; writes go to
+    # the resolved path so that a symlinked HISTFILE stays a symlink.
+    local hist_lock="${HISTFILE:a}" hist_path="${HISTFILE:A}"
+    local src src_name dst dst_lock dst_state snap_src="" snap_dst="" tmp=""
+    local stats attempt writable token="" token_base=""
+    local -a counts snap_size tmp_size
+    _zsh_history_check_owner "${file:h}" && _zsh_history_check_owner "$file" || return 1
+    {
+        if [[ "$action" == export ]]; then
+            if [[ ! -f "$hist_path" ]]; then
+                print -u2 -r -- "zsh-history: $hist_path does not exist"
+                return 1
+            fi
+            snap_src=$(mktemp) || return 1
+            _zsh_history_copy_locked "$hist_lock" "$hist_path" "$snap_src" || return 1
+            src="$snap_src" src_name="$hist_path" dst="$file" dst_lock="$file"
+            if (( ! dry_run )) && [[ ! -d "${file:h}" ]]; then
+                mkdir -p -m 700 -- "${file:h}" || return 1
+                _zsh_history_check_owner "${file:h}" || return 1
+            fi
+        else
+            if [[ ! -f "$file" ]]; then
+                print -u2 -r -- "zsh-history: no archive at $file"
+                return 1
+            fi
+            src="$file" src_name="$file" dst="$hist_path" dst_lock="$hist_lock"
+        fi
+        # Merge from a snapshot without holding the lock, then replace the
+        # destination only if it still matches the snapshot, or only grew:
+        # zsh appends between rewrites, and the appended entries are copied
+        # onto the merged file as they are. zsh would break a lock held
+        # through a long merge and append to the old file.
+        snap_dst=$(mktemp) || return 1
+        if (( ! dry_run )); then
+            tmp=$(mktemp "$dst.XXXXXX") || return 1
+        fi
+        for attempt in 1 2 3; do
+            _zsh_history_copy_locked "$dst_lock" "$dst" "$snap_dst" || return 1
+            dst_state="$REPLY"
+            if ! stats=$(_zsh_history_merge "$snap_dst" "$src" "$tmp"); then
+                print -u2 -r -- "zsh-history: merge failed; $dst was not changed"
+                return 1
+            fi
+            counts=(${(s: :)stats})
+            if [[ ${#counts} -ne 2 || "$counts[1]" != <-> || "$counts[2]" != <-> ]]; then
+                print -u2 -r -- "zsh-history: unexpected merge result '$stats'; $dst was not changed"
+                return 1
+            fi
+            if (( dry_run )); then
+                print -r -- "zsh-history: $action would add ${counts[1]} entries to $dst (${counts[2]} total)"
+                break
+            fi
+            if [[ "$dst_state" == present ]] && cmp -s -- "$tmp" "$snap_dst"; then
+                print -r -- "zsh-history: $dst already has every entry of $src_name"
+                break
+            fi
+            _zsh_history_lock "$dst_lock" || return 1
+            token="$REPLY" token_base="$dst_lock"
+            writable=0
+            if [[ "$dst_state" == absent ]]; then
+                [[ -e "$dst" ]] || writable=1
+            elif cmp -s -- "$dst" "$snap_dst"; then
+                writable=1
+            else
+                zstat -A snap_size +size -- "$snap_dst" || return 1
+                if head -c "${snap_size[1]}" -- "$dst" | cmp -s - "$snap_dst"; then
+                    zstat -A tmp_size +size -- "$tmp" || return 1
+                    tail -c "+$(( snap_size[1] + 1 ))" -- "$dst" >> "$tmp" || return 1
+                    writable=1
+                    (( counts[2] += $(tail -c "+$(( tmp_size[1] + 1 ))" -- "$tmp" \
+                        | awk '!c { n++ } { c = /\\$/ } END { print n + 0 }') ))
+                fi
+            fi
+            if (( writable )); then
+                chmod 600 -- "$tmp" && mv -f -- "$tmp" "$dst" || return 1
+                tmp=""
+            fi
+            _zsh_history_unlock "$token_base" "$token"
+            token=""
+            if (( writable )); then
+                if (( counts[1] )); then
+                    print -r -- "zsh-history: added ${counts[1]} entries to $dst (${counts[2]} total)"
+                else
+                    print -r -- "zsh-history: no new entries; rewrote $dst sorted and without duplicates (${counts[2]} entries)"
+                fi
+                [[ "$action" == import ]] \
+                    && print -r -- "zsh-history: open a new shell to use them; running shells keep their loaded history"
+                break
+            fi
+            if (( attempt == 3 )); then
+                print -u2 -r -- "zsh-history: $dst kept changing during the merge; nothing was written, try again"
+                return 1
+            fi
+        done
+        if [[ "$action" == import ]] && (( counts[2] > SAVEHIST )); then
+            print -u2 -r -- "zsh-history: warning: ${counts[2]} entries exceed SAVEHIST=$SAVEHIST; zsh trims HISTFILE to SAVEHIST when it rewrites the file"
+        fi
+    } always {
+        [[ -n "$token" ]] && _zsh_history_unlock "$token_base" "$token"
+        rm -f -- ${snap_src:+"$snap_src"} ${snap_dst:+"$snap_dst"} ${tmp:+"$tmp"}
+    }
+}
+
+# -------------------------------------------------------------------
 # Tab completions
 # -------------------------------------------------------------------
 if [ -n "$ZSH_VERSION" ] && (( $+functions[compdef] )); then

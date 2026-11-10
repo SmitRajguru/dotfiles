@@ -765,8 +765,10 @@ zsh_directory_name_functions=(${zsh_directory_name_functions:#_zdn_repo} _zdn_re
 #   wt sync                                 Fetch origin once, fast-forward local branches not checked out anywhere, then each worktree's
 #                                           branch to its upstream. Flags worktrees whose branch was moved underneath them ([moved])
 #                                           and offers to check out the moved branch's files there.
-#                                           Skips worktrees with a held index.lock, offers to clear stale ones, and keeps going past a
-#                                           failed ff (reported under `failed`; sync then exits non-zero)
+#                                           Removes stale git lock files first (as `wt locks`), skips worktrees whose index.lock
+#                                           remains ([locked]), and keeps going past a failed ff (reported under `failed`; sync then
+#                                           exits non-zero)
+#   wt locks [-n]                           Remove stale git lock files left by killed git commands; -n lists only
 #   wt merge --ref <ref> [--into <worktree>] Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
 #   wt clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
 #   wt prune [-y] [--sudo]                  Remove bazel output_bases + fix-deps caches for worktrees that no longer exist
@@ -831,18 +833,6 @@ wt() {
         echo "$clean"
     }
 
-    # Drop git worktree admin records whose dir was deleted out-of-band (a
-    # manual `rm` instead of `wt rm`). Otherwise they linger as "prunable"
-    # phantoms in list/cd/rm output and completion. Called at the top of the
-    # read/list arms so those self-heal. Safe here: every worktree is local
-    # under ~/worktrees, so a missing dir always means deleted — not the
-    # unmounted-network-path case that `git worktree prune` warns about.
-    # Classify a worktree's index.lock: prints "none", "held", or "stale".
-    # A lock is only "stale" when nothing has it open — an in-flight git
-    # command's lock must be left alone. lsof is authoritative; without it we
-    # fall back to age, since a real git index operation finishes in seconds
-    # and anything older is almost certainly a crashed process. Prints the
-    # lock's age in seconds as a second field for the caller to report.
     # Resolve a worktree's index.lock path. In a linked worktree $wt/.git is a
     # FILE containing "gitdir: <admin dir>" and the index lives in that admin
     # dir; in MAIN_REPO $wt/.git is a DIRECTORY holding the index directly.
@@ -857,26 +847,138 @@ wt() {
         print -r -- "${admin}/index.lock"
     }
 
-    __wt_index_lock_state() {
-        local lock age now mtime
-        lock=$(__wt_index_lock_path "$1")
-        [[ -e "$lock" ]] || { print -r -- "none 0"; return 0; }
-        now=$(date +%s)
-        mtime=$(stat -c %Y "$lock" 2>/dev/null) || mtime=$now
-        age=$(( now - mtime ))
-        if command -v lsof >/dev/null 2>&1; then
-            if lsof -- "$lock" >/dev/null 2>&1; then
-                print -r -- "held $age"
-            else
-                print -r -- "stale $age"
-            fi
-        elif (( age >= 120 )); then
-            print -r -- "stale $age"
-        else
-            print -r -- "held $age"
+    __wt_fmt_age() {
+        if   (( $1 >= 86400 )); then REPLY="$(( $1 / 86400 ))d"
+        elif (( $1 >= 3600 ));  then REPLY="$(( $1 / 3600 ))h"
+        elif (( $1 >= 60 ));    then REPLY="$(( $1 / 60 ))m"
+        else                         REPLY="${1}s"
         fi
     }
 
+    # Git takes a lock by creating <file>.lock and renaming it over <file>
+    # when done, so a git killed in between leaves the lock behind and every
+    # later command that needs the file fails with "File exists". Lists git's
+    # locks for MAIN_REPO and its worktrees and removes the stale ones unless
+    # $1 is 1 (dry run). Stale: at least 10 minutes old, owned by this user,
+    # open in no process, and no git process running in the repo (cwd, argv
+    # or GIT_* environment) — `git commit -a` waiting in the editor holds
+    # index.lock without keeping it open. Reads /proc rather than running
+    # lsof, which stats every mount and can hang on a dead NFS server. Removes
+    # nothing without /proc or on a network filesystem, where git on other
+    # hosts cannot be seen. Fills the caller's `lock_state` (lock path ->
+    # "state detail"). Returns 1 if a removal failed.
+    __wt_clear_locks() {
+        emulate -L zsh
+        setopt extended_glob
+        local dry=$1 min_age=600 gd od verb=remove
+        gd=$(git -C "$MAIN_REPO" rev-parse --path-format=absolute --git-common-dir) || return 1
+        od=$(git -C "$MAIN_REPO" rev-parse --path-format=absolute --git-path objects) || return 1
+        gd=${gd:A} od=${od:A}
+        local -a locks
+        locks=($gd/{,worktrees/*/}(index|config|config.worktree|packed-refs|shallow|gc.log|[A-Z_]##).lock(N.)
+               $gd/{,worktrees/*/}(refs|logs|reftable|info|sequencer|rebase-merge)/**/*.lock(N.)
+               $od/{,info/**/,pack/}*.lock(N.))
+        (( dry )) && verb=list
+        echo "${_CT_PHASE}[locks]${_CT_RESET} ${_CT_PATH}${gd}${_CT_RESET}: $verb stale git lock files"
+        if (( ! $#locks )); then
+            echo "    ${_CT_PATH}(no lock files)${_CT_RESET}"
+            return 0
+        fi
+        zmodload -F zsh/stat b:zstat
+        zmodload -F zsh/datetime p:EPOCHSECONDS
+        local have_proc=0 boot=0 fs="" busy="" key val rest p comm cwd root args REPLY
+        local -a roots=("${MAIN_REPO:A}" "$gd" "$od") genv
+        local -A holder st st2
+        if [[ -r /proc/stat ]]; then
+            have_proc=1
+            while read -r key val rest; do
+                [[ $key == btime ]] && { boot=$val; break; }
+            done < /proc/stat
+            fs=$(stat -f -c %T -- "$gd" 2>/dev/null)
+            while read -r p val; do
+                p=${p%/fd} comm=""
+                read -r comm 2>/dev/null < "$p/comm"
+                holder[$val]="pid ${p:t} ($comm)"
+            done < <(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 \
+                        \( -lname "$gd/*.lock" -o -lname "$od/*.lock" \) -printf '%h %l\n' 2>/dev/null)
+            roots+=(${${(f)"$(git -C "$MAIN_REPO" worktree list --porcelain | sed -n 's/^worktree //p')"}:A})
+            for p in /proc/<->(N); do
+                read -r comm 2>/dev/null < "$p/comm" || continue
+                [[ $comm == git* && $comm != gitstatusd* ]] || continue
+                args="" genv=()
+                { args=${(j: :)${(0)"$(<$p/cmdline)"}} } 2>/dev/null
+                [[ $args == *(fsmonitor|credential-cache)--daemon* ]] && continue
+                cwd=$(zstat +link -- "$p/cwd" 2>/dev/null)
+                { genv=(${(M)${(0)"$(<$p/environ)"}:#GIT_*}) } 2>/dev/null
+                for root in $roots; do
+                    if [[ $cwd == $root || $cwd == $root/* || "$args ${genv[*]}" == *$root* ]]; then
+                        busy="pid ${p:t}: ${args[1,60]}"
+                        break 2
+                    fi
+                done
+            done
+        fi
+        local now=$EPOCHSECONDS lock tmp age state detail color rc=0
+        for lock in $locks; do
+            zstat -H st -- "$lock" 2>/dev/null || continue
+            age=$(( now - st[mtime] ))
+            __wt_fmt_age $age
+            detail="$REPLY old"
+            (( st[mtime] < boot )) && detail+=", from before the last boot"
+            if [[ -n ${holder[$lock]} ]]; then
+                state=held detail+=", open by ${holder[$lock]}"
+            elif (( age < min_age )); then
+                state=recent
+            elif (( st[uid] != UID )); then
+                state=unchecked detail+=", owned by uid ${st[uid]}"
+            elif (( ! have_proc )); then
+                state=unchecked detail+=", no /proc to look for git processes"
+            elif [[ $fs == (nfs*|cifs|smb*|fuse*|9p|ceph|lustre|gpfs|afs|glusterfs) ]]; then
+                state=unchecked detail+=", repo on $fs where git on other hosts cannot be seen"
+            elif [[ -n $busy ]]; then
+                state=busy detail+=", git running in the repo ($busy)"
+            else
+                state=stale detail+=", nothing holds it"
+            fi
+            # Move the lock aside and delete it only if it is still the file
+            # inspected above; a git that took the path meanwhile gets it back.
+            if [[ $state == stale ]]; then
+                tmp="$lock.wt-stale.$$"
+                if (( dry )); then
+                    detail+="; would remove"
+                elif ! command mv -f -- "$lock" "$tmp" 2>/dev/null; then
+                    if [[ -e $lock ]]; then
+                        state=failed rc=1
+                    else
+                        state=gone detail+="; removed by something else"
+                    fi
+                elif zstat -H st2 -- "$tmp" 2>/dev/null \
+                        && (( st2[inode] == st[inode] && st2[device] == st[device] )); then
+                    rm -f -- "$tmp"
+                    state=removed
+                else
+                    ln -- "$tmp" "$lock" 2>/dev/null
+                    rm -f -- "$tmp"
+                    state=changed detail="replaced while checking; left alone"
+                fi
+            fi
+            lock_state[$lock]="$state $detail"
+            case $state in
+                removed) color=$_CT_OK ;;
+                failed)  color=$_CT_BAD ;;
+                *)       color=$_CT_WARN ;;
+            esac
+            echo "  ${color}[$state]${_CT_RESET} ${lock#$gd/} ${_CT_PATH}($detail)${_CT_RESET}"
+        done
+        return $rc
+    }
+
+    # Drop git worktree admin records whose dir was deleted out-of-band (a
+    # manual `rm` instead of `wt rm`). Otherwise they linger as "prunable"
+    # phantoms in list/cd/rm output and completion. Called at the top of the
+    # read/list arms so those self-heal. Safe here: every worktree is local
+    # under ~/worktrees, so a missing dir always means deleted — not the
+    # unmounted-network-path case that `git worktree prune` warns about.
     __wt_prune_stale() {
         # Safety: if the worktrees root itself is gone (e.g. an unmounted
         # mount), every entry would look prunable — bail rather than wipe all
@@ -1662,18 +1764,45 @@ PRUNEHELP
             echo "${_CT_DONE}Done.${_CT_RESET} Pruned $removed dir(s)$( (( failed )) && echo ", $failed failed" )."
             (( failed )) && return 1
             ;;
+        locks)
+            local dry_run=0
+            (( $# > 1 )) && { print -u2 -- "${_CT_BAD}wt locks:${_CT_RESET} too many arguments (try -h)"; return 1; }
+            case "${1:-}" in
+                -h|--help)
+                    cat <<'LOCKSHELP'
+Usage: wt locks [--dry-run|-n]
+  Lists git's lock files for $MAIN_REPO and its worktrees (index,
+  HEAD and other pseudorefs, config, packed-refs, refs, reflogs,
+  sequencer, objects) and removes the stale ones that a killed git
+  command left behind. Stale: at least 10 minutes old, owned by you,
+  open in no process, and no git process running in the repo or a
+  worktree. Nothing is removed on a network filesystem or without
+  /proc. wt sync does the same before it fetches.
+  --dry-run / -n: list only.
+LOCKSHELP
+                    return 0 ;;
+                -n|--dry-run) dry_run=1 ;;
+                "") ;;
+                *) print -u2 -- "${_CT_BAD}wt locks:${_CT_RESET} unknown arg '$1' (try --dry-run or -h)"; return 1 ;;
+            esac
+            local -A lock_state
+            __wt_clear_locks $dry_run
+            ;;
         sync)
-            # Fetch from origin once (refs/remotes/origin/* is shared across
-            # all worktrees via the main repo's .git dir), then fast-forward
+            # Remove stale git locks, fetch from origin once
+            # (refs/remotes/origin/* is shared across all worktrees via the
+            # main repo's .git dir), then fast-forward
             # each worktree's checked-out branch to its upstream. Classifies
             # each wt as up-to-date / ff / ahead / diverged / no-upstream /
             # detached / moved / dirty. Refuses ff on dirty wts.
             local dry_run=0 t0=$SECONDS
+            (( $# > 1 )) && { print -u2 -- "${_CT_BAD}wt sync:${_CT_RESET} too many arguments (try -h)"; return 1; }
             case "${1:-}" in
                 -h|--help)
                     cat <<'SYNCHELP'
 Usage: wt sync [--dry-run|-n]
-  Single `git fetch origin --prune` from the main repo (shared refs),
+  Removes stale git lock files (see `wt locks -h`), then runs a
+  single `git fetch origin --prune` from the main repo (shared refs),
   then fast-forwards every local branch that tracks an origin branch
   and is not checked out in any worktree, then runs per-worktree
   `git merge --ff-only @{u}` on the checked-out branch. Skips dirty /
@@ -1682,8 +1811,10 @@ Usage: wt sync [--dry-run|-n]
   outside it (index and files still at the old commit) is reported
   as [moved]; in an interactive shell wt sync offers to check out
   the branch's files there (refused if that would overwrite
-  untracked or ignored files), then continues normally.
-  --dry-run / -n: report state only — no fetch / branch update / merge.
+  untracked or ignored files), then continues normally. A worktree
+  whose index.lock is still there is reported as [locked] and skipped.
+  --dry-run / -n: report state only — no lock removal / fetch /
+  branch update / merge.
 SYNCHELP
                     return 0 ;;
                 -n|--dry-run) dry_run=1 ;;
@@ -1709,10 +1840,17 @@ SYNCHELP
             # Runs in --dry-run too: it only removes records for already-deleted
             # dirs, which keeps the report accurate rather than mutating state.
             __wt_prune_stale
+            # Per-category lists for the grouped summary at the end.
+            local -a ff_list uptodate_list ahead_list diverged_list \
+                     no_upstream_list detached_list dirty_list \
+                     moved_list locked_list failed_list
+            # Before the fetch, which fails on a stale ref or packed-refs lock.
+            local -A lock_state
+            __wt_clear_locks $dry_run || failed_list+=("git lock removal")
             # Network phase: fetch once (shared refs). Skipped under --dry-run,
             # which reports state as of the last real sync.
             if (( dry_run )); then
-                echo "${_CT_PHASE}[dry-run]${_CT_RESET} ${_CT_PATH}no fetch / branch update / merge — reporting last-known state${_CT_RESET}"
+                echo "${_CT_PHASE}[dry-run]${_CT_RESET} ${_CT_PATH}no lock removal / fetch / branch update / merge — reporting last-known state${_CT_RESET}"
             else
                 echo "${_CT_PHASE}[fetch]${_CT_RESET} ${_CT_PATH}$MAIN_REPO${_CT_RESET}: git fetch origin --prune"
                 # Capture output then print, so sed doesn't mask the fetch's exit
@@ -1730,10 +1868,6 @@ SYNCHELP
                     return 1
                 fi
             fi
-            # Per-category lists for the grouped summary at the end.
-            local -a ff_list uptodate_list ahead_list diverged_list \
-                     no_upstream_list detached_list dirty_list \
-                     moved_list locked_list failed_list
             # Branches checked out in a worktree are left to the per-worktree
             # merge: moving only their pointer (as `hub sync` does) leaves the
             # worktree's index and files at the old commit. `git fetch .` also
@@ -1821,6 +1955,19 @@ SYNCHELP
                     label="${wt_path##*/}"
                 fi
                 echo "  ${_CT_HDR}===== $label =====${_CT_RESET}"
+                # Any index.lock left here survived the [locks] phase (or was
+                # taken since), so git commands that write the index would fail.
+                # A dry run continues past a stale one, which a real run removes.
+                local wt_lock wt_lock_info wt_lock_branch
+                wt_lock=$(__wt_index_lock_path "$wt_path")
+                wt_lock_info=${lock_state[${wt_lock:A}]}
+                if [[ -e "$wt_lock" && "${wt_lock_info%% *}" != stale ]]; then
+                    wt_lock_branch=$(__wt_branch "$wt_path") || wt_lock_branch="detached"
+                    echo "  ${_CT_WARN}[locked]${_CT_RESET} ${_CT_REF}$wt_lock_branch${_CT_RESET} ${_CT_PATH}(index.lock ${${wt_lock_info/ /, }:-taken during this sync}; try again later)${_CT_RESET}"
+                    _wt_head_meta "$wt_path"
+                    locked_list+=("$label ($wt_lock_branch)")
+                    continue
+                fi
                 local wt_status
                 wt_status=$(git -C "$wt_path" status --porcelain 2>/dev/null)
                 # Branch moved from outside the worktree: the newest entry of its
@@ -1966,54 +2113,6 @@ SYNCHELP
                     if (( dry_run )); then
                         echo "    ${_CT_PATH}(dry-run: would fast-forward)${_CT_RESET}"
                     else
-                        # A leftover index.lock makes the ff fail with git's
-                        # "Another git process seems to be running" error. Check
-                        # first so the cause is named instead of surfacing as a
-                        # generic rc=1, and offer to clear it when nothing holds
-                        # it (crashed process / IDE git refresh killed midway).
-                        local lock_state lock_age lock_info
-                        lock_info=$(__wt_index_lock_state "$wt_path")
-                        lock_state="${lock_info%% *}"; lock_age="${lock_info##* }"
-                        if [[ "$lock_state" == "held" ]]; then
-                            echo "  ${_CT_BAD}[locked]${_CT_RESET} ${_CT_REF}$branch${_CT_RESET} ${_CT_PATH}(index.lock held, ${lock_age}s old — another git process is running)${_CT_RESET}"
-                            locked_list+=("$label ($branch)")
-                            _wt_head_meta "$wt_path"
-                            continue
-                        elif [[ "$lock_state" == "stale" ]]; then
-                            echo "  ${_CT_WARN}[locked]${_CT_RESET} ${_CT_REF}$branch${_CT_RESET} ${_CT_PATH}(stale index.lock, ${lock_age}s old, no holder)${_CT_RESET}"
-                            local lock_ans=""
-                            if [[ -o interactive ]]; then
-                                printf "    ${_CT_PROMPT}Remove stale lock and fast-forward?${_CT_RESET} [y/N]: " >&2
-                                read -r lock_ans < /dev/tty
-                            fi
-                            if [[ "$lock_ans" == [yY]* ]]; then
-                                local lock_path lock_recheck
-                                lock_path=$(__wt_index_lock_path "$wt_path")
-                                # The prompt above is an unbounded window in
-                                # which a real git process can legitimately take
-                                # the lock. Re-check before removing so we never
-                                # yank a live lock out from under one.
-                                lock_recheck=$(__wt_index_lock_state "$wt_path")
-                                if [[ "${lock_recheck%% *}" != "stale" ]]; then
-                                    echo "    ${_CT_BAD}lock is no longer stale (${lock_recheck%% *}); leaving it alone${_CT_RESET}" >&2
-                                    locked_list+=("$label ($branch)")
-                                    _wt_head_meta "$wt_path"
-                                    continue
-                                fi
-                                if rm -f "$lock_path"; then
-                                    echo "    ${_CT_OK}removed stale lock${_CT_RESET}"
-                                else
-                                    echo "    ${_CT_BAD}failed to remove${_CT_RESET} ${_CT_PATH}$lock_path${_CT_RESET}" >&2
-                                    locked_list+=("$label ($branch)")
-                                    _wt_head_meta "$wt_path"
-                                    continue
-                                fi
-                            else
-                                locked_list+=("$label ($branch)")
-                                _wt_head_meta "$wt_path"
-                                continue
-                            fi
-                        fi
                         local merge_output merge_rc
                         merge_output=$(_capture_with_color git -C "$wt_path" merge --ff-only "$upstream")
                         merge_rc=$?
@@ -2349,6 +2448,7 @@ Commands:
   rm [-f] <worktree>                   Remove worktree (prompts to force if dirty; -f skips prompt), then
                                        prompts to delete its local branch; auto-purges its bazel cache
   sync                                 Fetch origin once, fast-forward branches not checked out anywhere, then each worktree's branch
+  locks [-n]                           Remove stale git lock files left by killed git commands (-n: list only)
   merge --ref <ref> [--into <worktree>] Merge <ref> (branch/tag/sha) into cwd's worktree or --into target
   clean [--into <worktree>] [-x] [-y]  reset --hard HEAD + git clean -fd. -x: include ignored. -y: skip prompt
   prune [-y] [--sudo]                  Remove bazel output_base dirs for worktrees that no longer exist
@@ -2962,7 +3062,7 @@ elif [ -n "$BASH_VERSION" ]; then
         local cur="${COMP_WORDS[COMP_CWORD]}"
         local subcmd="${COMP_WORDS[1]}"
         if (( COMP_CWORD == 1 )); then
-            COMPREPLY=($(compgen -W "cd push pull swap add rm prune-branches prune-worktrees list" -- "$cur"))
+            COMPREPLY=($(compgen -W "cd push pull swap add rm sync locks prune-branches prune-worktrees list" -- "$cur"))
             return
         fi
         case "$subcmd" in

@@ -80,7 +80,7 @@ trap print_summary EXIT
 ###############################################################################
 step_apt() {
   local APT_PKGS=(
-    zsh git curl wget unzip hub tmux ssh-askpass
+    zsh git curl wget unzip rsync hub tmux ssh-askpass
     build-essential
     libevent-dev libncurses-dev bison pkg-config
     fzf jq fontconfig

@@ -9,35 +9,67 @@ Lightweight Chrome DevTools Protocol CLI. Connects directly via WebSocket — no
 
 ## Prerequisites
 
-- Chrome (or Chromium, Brave, Edge, Vivaldi) with remote debugging enabled: open `chrome://inspect/#remote-debugging` and toggle the switch
+- A separate Chrome instance started for the session with its own temporary profile and an unused port (see **Isolated browser**). Do not attach to the user's everyday Chrome profile
 - Node.js 22+ (uses built-in WebSocket)
 - If your browser's `DevToolsActivePort` is in a non-standard location, set `CDP_PORT_FILE` to its full path
 
-## SSH Remote Usage
+## Isolated browser
 
-When running on a remote machine over SSH, the `DevToolsActivePort` file won't exist locally. To set it up:
+The debugging port gives full control of the browser, including every site
+the profile is logged in to, to anything that can reach the port. So the
+session always uses a separate browser: Google Chrome Canary (a build the
+user does not browse with), a new temporary profile and a random unused
+port. Chrome 136 and later ignore `--remote-debugging-port` on the default
+profile directory, so `--user-data-dir` is required as well.
 
-1. Ask the user to run this on their **local machine** (macOS):
+1. Pick a random port that nothing listens on, on the machine the agent
+   runs on:
+
    ```bash
-   cat ~/Library/Application\ Support/Google/Chrome/DevToolsActivePort
+   port=""; for i in 1 2 3 4 5; do p=$(shuf -i 20000-29999 -n 1); ss -ltn "sport = :$p" | grep -q LISTEN || { port=$p; break; }; done; echo "${port:-no free port found}"
    ```
-   Or on Linux:
+
+2. Ask the user to check that the port is free on their machine as well
+   (`lsof -nP -iTCP:<port> -sTCP:LISTEN` prints nothing) and to start
+   Canary with it, from a terminal (macOS):
+
    ```bash
-   cat ~/.config/google-chrome/DevToolsActivePort
+   "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary" \
+     --remote-debugging-port=<port> \
+     --user-data-dir="$(mktemp -d /tmp/chrome-cdp.XXXXXX)" \
+     --no-first-run --no-default-browser-check
    ```
-2. The output is two lines: a port number and a WebSocket path. Use these to create the file on the remote machine:
+
+   Linux has no Canary build; use the Dev build, `google-chrome-unstable`,
+   with the same flags.
+
+3. When the agent runs on a remote machine over SSH, the user forwards the
+   port from their machine in a separate terminal that stays open. Do not
+   edit the user's SSH configuration.
+
    ```bash
-   mkdir -p ~/.config/google-chrome
-   cat > ~/.config/google-chrome/DevToolsActivePort <<'EOF'
-   <port>
-   <ws-path>
-   EOF
+   ssh -N -R <port>:127.0.0.1:<port> <remote-host>
    ```
-3. The user must have SSH port forwarding configured for the port from step 1. In their SSH config:
+
+4. On the agent's machine, write a port file for the session from the
+   browser's `/json/version` endpoint:
+
+   ```bash
+   mkdir -p ~/.cache/cdp
+   curl -s http://127.0.0.1:<port>/json/version \
+     | python3 -c 'import json,sys,urllib.parse as u; print(u.urlparse(json.load(sys.stdin)["webSocketDebuggerUrl"]).path)' \
+     | { read -r ws; printf '%s\n%s\n' <port> "$ws" > ~/.cache/cdp/port-<port>; }
    ```
-   RemoteForward <port> 127.0.0.1:<port>
-   ```
-   Or when connecting: `ssh -R <port>:127.0.0.1:<port> <host>`
+
+   Environment variables do not persist between shell calls, so prefix
+   every command: `CDP_PORT_FILE=~/.cache/cdp/port-<port> scripts/cdp.mjs list`.
+
+5. The profile starts with no logins, cookies or extensions. Ask before the
+   user logs in to any site in it.
+
+6. When done: `scripts/cdp.mjs stop`, delete `~/.cache/cdp/port-<port>`,
+   and ask the user to quit Canary, close the SSH window and delete the
+   profile (`rm -rf /tmp/chrome-cdp.*`).
 
 ## Commands
 
@@ -82,7 +114,7 @@ scripts/cdp.mjs clickxy <target> <x> <y>       # click at CSS pixel coords
 scripts/cdp.mjs type    <target> <text>         # Input.insertText at current focus; works in cross-origin iframes unlike eval
 scripts/cdp.mjs loadall <target> <selector> [ms]  # click "load more" until gone (default 1500ms between clicks)
 scripts/cdp.mjs evalraw <target> <method> [json]  # raw CDP command passthrough
-scripts/cdp.mjs open    [url]                  # open new tab (each triggers Allow prompt)
+scripts/cdp.mjs open    [url]                  # open new tab
 scripts/cdp.mjs stop    [target]               # stop daemon(s)
 ```
 
@@ -100,4 +132,4 @@ CSS px = screenshot image px / DPR
 
 - Prefer `snap --compact` over `html` for page structure.
 - Use `type` (not eval) to enter text in cross-origin iframes — `click`/`clickxy` to focus first, then `type`.
-- Chrome shows an "Allow debugging" modal once per tab on first access. A background daemon keeps the session alive so subsequent commands need no further approval. Daemons auto-exit after 20 minutes of inactivity.
+- A browser started with `--remote-debugging-port` shows no "Allow debugging" prompt. A background daemon keeps each session alive; daemons exit after 20 minutes of inactivity.

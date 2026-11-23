@@ -43,6 +43,11 @@ profile directory, so `--user-data-dir` is required as well.
    Linux has no Canary build; use the Dev build, `google-chrome-unstable`,
    with the same flags.
 
+   Once the browser is up, the user opens
+   `chrome://inspect/#remote-debugging` in it and checks that remote
+   debugging is on, switching it on if it is off. Show this URL with the
+   steps every time.
+
 3. When the agent runs on a remote machine over SSH, the user forwards the
    port from their machine in a separate terminal that stays open. Do not
    edit the user's SSH configuration.
